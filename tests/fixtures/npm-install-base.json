@@ -1,0 +1,11 @@
+{
+  "name": "fixture",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "fixture", "version": "1.0.0"},
+    "node_modules/safe-package": {
+      "version": "1.0.0",
+      "hasInstallScript": false
+    }
+  }
+}

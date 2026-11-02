@@ -1,0 +1,319 @@
+name: dependency guard gate
+
+on:
+  workflow_call:
+    inputs:
+      patch-cooldown-days:
+        description: Cooldown for patch releases
+        type: number
+        default: 3
+      minor-cooldown-days:
+        description: Cooldown for minor releases
+        type: number
+        default: 7
+      security-cooldown-hours:
+        description: Cooldown for the advised package in a security PR
+        type: number
+        default: 8
+      cargo-directory:
+        description: Directory containing Cargo.toml and Cargo.lock
+        type: string
+        default: .
+      npm-directory:
+        description: Directory containing package.json and package-lock.json
+        type: string
+        default: .
+    outputs:
+      verdict:
+        description: red, ineligible, eligible, or not-dependency
+        value: ${{ jobs.gate.outputs.verdict }}
+      head-sha:
+        description: Pull request head SHA evaluated by the gate
+        value: ${{ jobs.gate.outputs.head-sha }}
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      # Write is used only to create the cooldown retry label.
+      issues: write
+      # Write is used only to reconcile that label and revoke stale auto-merge;
+      # revocation must finish before this required job concludes.
+      pull-requests: write
+    outputs:
+      verdict: ${{ steps.final.outputs.verdict }}
+      head-sha: ${{ steps.context.outputs.head-sha }}
+    steps:
+      - name: Classify pull request
+        id: context
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          echo "head-sha=${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+          if [[ "${PR_AUTHOR}" != "dependabot[bot]" ]]; then
+            echo "is-dependabot=false" >> "${GITHUB_OUTPUT}"
+            echo "verdict=not-dependency" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "pull request head SHA is unavailable" >&2
+            exit 1
+          fi
+          echo "is-dependabot=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify called workflow identity
+        id: identity
+        if: steps.context.outputs.is-dependabot == 'true'
+        # github.workflow_ref identifies the caller in this reusable job, so
+        # only the OIDC job_workflow_* claims identify the called workflow.
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          reason = "could not verify called workflow identity"
+          try:
+              request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+              request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+              if not request_url or not request_token:
+                  raise RuntimeError("GitHub OIDC environment is unavailable")
+              separator = "&" if "?" in request_url else "?"
+              request = Request(
+                  request_url + separator + urlencode({"audience": "dependency-guard"}),
+                  headers={"Authorization": "Bearer " + request_token},
+              )
+              with urlopen(request, timeout=10) as response:
+                  token = json.load(response)["value"]
+              encoded_claims = token.split(".")[1]
+              encoded_claims += "=" * (-len(encoded_claims) % 4)
+              claims = json.loads(base64.urlsafe_b64decode(encoded_claims))
+
+              tool = claims.get("job_workflow_sha", "")
+              expected_ref = (
+                  "jonathanmoregard/dependency-guard/.github/workflows/gate.yml@" + tool
+              )
+              if claims.get("iss") != "https://token.actions.githubusercontent.com":
+                  raise ValueError("unexpected OIDC issuer")
+              if claims.get("aud") != "dependency-guard":
+                  raise ValueError("unexpected OIDC audience")
+              if not re.fullmatch(r"[0-9a-f]{40}", tool):
+                  raise ValueError("called workflow SHA is unavailable")
+              if claims.get("job_workflow_ref") != expected_ref:
+                  raise ValueError("called workflow must be pinned to its full SHA")
+          except Exception as error:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("verified=false\n")
+                  output.write("verdict=ineligible\n")
+                  output.write(f"reason={reason}\n")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write(f"## dependency-guard\n\nVerdict: **ineligible**\n\n1. {reason}\n")
+                  if str(error) == "GitHub OIDC environment is unavailable":
+                      summary.write(f"1. {error}\n")
+          else:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("verified=true\n")
+                  output.write(f"tool-sha={tool}\n")
+          PY
+
+      - name: Check out gate implementation
+        if: steps.identity.outputs.verified == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: jonathanmoregard/dependency-guard
+          ref: ${{ steps.identity.outputs.tool-sha }}
+          path: .dependency-guard/tool
+          persist-credentials: false
+
+      - name: Check out base as data
+        if: steps.identity.outputs.verified == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .dependency-guard/base
+          persist-credentials: false
+
+      - name: Check out head as data
+        if: steps.identity.outputs.verified == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .dependency-guard/head
+          persist-credentials: false
+
+      - name: Fetch commit and file metadata
+        if: steps.identity.outputs.verified == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+            > "${RUNNER_TEMP}/commits.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+            > "${RUNNER_TEMP}/files.json"
+
+      - name: Read Dependabot metadata
+        id: metadata
+        if: steps.identity.outputs.verified == 'true'
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Save Dependabot metadata as data
+        if: steps.identity.outputs.verified == 'true'
+        env:
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          metadata = {
+              "dependency-names": os.environ["DEPENDENCY_NAMES"],
+              "package-ecosystem": os.environ["PACKAGE_ECOSYSTEM"],
+              "update-type": os.environ["UPDATE_TYPE"],
+          }
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "metadata.json"), "w", encoding="utf-8") as output:
+              json.dump(metadata, output)
+          PY
+
+      - name: Evaluate dependency gate
+        id: evaluate
+        if: steps.identity.outputs.verified == 'true'
+        env:
+          ACTOR: ${{ github.actor }}
+          BASE_ROOT: ${{ github.workspace }}/.dependency-guard/base
+          CARGO_DIR: ${{ inputs.cargo-directory }}
+          CHANGED_FILES_FILE: ${{ runner.temp }}/files.json
+          COMMITS_FILE: ${{ runner.temp }}/commits.json
+          HEAD_ROOT: ${{ github.workspace }}/.dependency-guard/head
+          METADATA_FILE: ${{ runner.temp }}/metadata.json
+          MINOR_DAYS: ${{ inputs.minor-cooldown-days }}
+          NPM_DIR: ${{ inputs.npm-directory }}
+          PATCH_DAYS: ${{ inputs.patch-cooldown-days }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          SECURITY_HOURS: ${{ inputs.security-cooldown-hours }}
+        working-directory: .dependency-guard/tool
+        run: |
+          set +e
+          python3 -m dependency_guard.gate > "${RUNNER_TEMP}/verdict.json"
+          gate_status=$?
+          set -e
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "verdict.json"), encoding="utf-8") as source:
+              verdict = json.load(source)["verdict"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"verdict={verdict}\n")
+          PY
+          exit "${gate_status}"
+
+      - name: Finalize verdict
+        id: final
+        if: always()
+        env:
+          CONTEXT_VERDICT: ${{ steps.context.outputs.verdict }}
+          EVALUATED_VERDICT: ${{ steps.evaluate.outputs.verdict }}
+          IDENTITY_REASON: ${{ steps.identity.outputs.reason }}
+          IDENTITY_VERDICT: ${{ steps.identity.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          verdict="${EVALUATED_VERDICT:-${IDENTITY_VERDICT:-${CONTEXT_VERDICT:-red}}}"
+          case "${verdict}" in
+            red|ineligible|eligible|not-dependency) ;;
+            *) verdict=red ;;
+          esac
+          echo "verdict=${verdict}" >> "${GITHUB_OUTPUT}"
+          reason_file="${RUNNER_TEMP}/dependency-guard-reason.txt"
+          cooldown_file="${RUNNER_TEMP}/dependency-guard-cooldown-only.txt"
+          printf '%s' 'false' > "${cooldown_file}"
+          if [[ -n "${EVALUATED_VERDICT}" && -s "${RUNNER_TEMP}/verdict.json" ]]; then
+            python3 - "${RUNNER_TEMP}/verdict.json" "${reason_file}" "${cooldown_file}" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          reasons = document.get("reasons", [])
+          reason = reasons[0] if reasons and isinstance(reasons[0], str) else "gate did not provide a reason"
+          Path(sys.argv[2]).write_text(reason, encoding="utf-8")
+          cooldown_only = document.get("cooldown_only") is True
+          Path(sys.argv[3]).write_text(
+              "true" if cooldown_only else "false", encoding="utf-8"
+          )
+          PY
+          elif [[ -n "${IDENTITY_REASON}" ]]; then
+            printf '%s' "${IDENTITY_REASON}" > "${reason_file}"
+          else
+            printf '%s' 'gate did not provide a reason' > "${reason_file}"
+          fi
+          echo "cooldown-only=$(< "${cooldown_file}")" >> "${GITHUB_OUTPUT}"
+
+      - name: Update cooldown retry label
+        if: always() && github.event.pull_request.user.login == 'dependabot[bot]'
+        env:
+          COOLDOWN_ONLY: ${{ steps.final.outputs.cooldown-only }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          update_cooldown_label() {
+            local label="dependency-guard:cooldown"
+            local has_label
+            if [[ "${COOLDOWN_ONLY}" == "true" ]]; then
+              gh label create "${label}" --repo "${GITHUB_REPOSITORY}" \
+                --color ededed \
+                --description "Dependency update waiting for cooldown retry" \
+                --force || return
+              gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                --add-label "${label}" || return
+            else
+              has_label=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                --json labels --jq 'any(.labels[]; .name == "dependency-guard:cooldown")') \
+                || return
+              if [[ "${has_label}" == "true" ]]; then
+                gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                  --remove-label "${label}" || return
+              fi
+            fi
+          }
+
+          if ! failure=$(update_cooldown_label 2>&1); then
+            echo "::warning::Could not update cooldown retry label: ${failure}"
+          fi
+          exit 0
+
+      - name: Disarm stale auto-merge
+        if: always() && github.event.pull_request.user.login == 'dependabot[bot]' && steps.final.outputs.verdict != 'eligible'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERDICT: ${{ steps.final.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          auto_merge=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [[ "${auto_merge}" == "true" ]]; then
+            gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --disable-auto
+            reason=$(< "${RUNNER_TEMP}/dependency-guard-reason.txt")
+            body="dependency-guard disabled auto-merge: ${VERDICT} — ${reason}"
+            if ! gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "${body}"; then
+              echo "warning: auto-merge was disabled but the PR comment failed" >&2
+            fi
+          fi
