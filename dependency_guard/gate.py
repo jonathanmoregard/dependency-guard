@@ -12,7 +12,7 @@ import sys
 from typing import Iterable
 
 from .lockdiff import LockfileError, PackageChange, diff_lockfiles
-from .registry import HttpRegistry, Registry
+from .registry import HttpRegistry, OsvVulnerability, Registry
 from .rules import classify_update
 
 
@@ -125,9 +125,12 @@ def _osv_vulns(
     ineligible_reasons: list[str],
     *,
     reject_findings: bool,
-) -> set[str] | None:
+) -> dict[str, OsvVulnerability] | None:
     try:
-        vulnerabilities = set(registry.osv_vulns(ecosystem, name, version))
+        vulnerabilities = {
+            vulnerability.vulnerability_id: vulnerability
+            for vulnerability in registry.osv_vulns(ecosystem, name, version)
+        }
     except Exception:
         ineligible_reasons.append(
             f"could not verify OSV for {ecosystem}:{name}@{version}"
@@ -244,7 +247,11 @@ def evaluate_gate(
             security_update = (
                 old_vulnerabilities is not None
                 and new_vulnerabilities is not None
-                and bool(old_vulnerabilities - new_vulnerabilities)
+                and any(
+                    vulnerability_id not in new_vulnerabilities
+                    and change.new in vulnerability.fixed_versions
+                    for vulnerability_id, vulnerability in old_vulnerabilities.items()
+                )
             )
         if update_type is None:
             ineligible_reasons.append(

@@ -26,7 +26,18 @@ class FakeRegistry:
     def osv_vulns(self, ecosystem, name, version):
         if self.osv_error in (name, (name, version)):
             raise RuntimeError("OSV unavailable")
-        return self.vulns.get((name, version), self.vulns.get(name, []))
+        return [
+            item if isinstance(item, FakeVulnerability) else FakeVulnerability(item)
+            for item in self.vulns.get((name, version), self.vulns.get(name, []))
+        ]
+
+
+class FakeVulnerability(str):
+    def __new__(cls, vulnerability_id, fixed_versions=()):
+        value = super().__new__(cls, vulnerability_id)
+        value.vulnerability_id = vulnerability_id
+        value.fixed_versions = tuple(fixed_versions)
+        return value
 
 
 def verified_commits(login=DEPENDABOT, verified=True):
@@ -288,12 +299,32 @@ class GateTests(unittest.TestCase):
                 "direct": timedelta(hours=8, minutes=1),
                 "transitive": timedelta(days=4),
             },
-            vulns={("direct", "1.0.0"): ["GHSA-fixed"]},
+            vulns={
+                ("direct", "1.0.0"): [
+                    FakeVulnerability("GHSA-fixed", ("1.0.1",))
+                ]
+            },
         )
 
         result = self.evaluate(registry=registry, metadata=metadata)
 
         self.assertEqual(result.verdict, "eligible")
+
+    def test_security_cooldown_does_not_apply_after_exact_fixed_version(self):
+        self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.9")])
+        registry = FakeRegistry(
+            ages={"direct": timedelta(hours=9)},
+            vulns={
+                ("direct", "1.0.0"): [
+                    FakeVulnerability("GHSA-fixed", ("1.0.1",))
+                ]
+            },
+        )
+
+        result = self.evaluate(registry=registry)
+
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertTrue(any("72h cooldown" in reason for reason in result.reasons))
 
     def test_ghsa_metadata_does_not_shorten_cooldown_without_osv_fix(self):
         self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
@@ -330,7 +361,9 @@ class GateTests(unittest.TestCase):
         registry = FakeRegistry(
             ages={"foo": timedelta(hours=9), "foo-extra": timedelta(hours=9)},
             vulns={
-                ("foo", "1.0.0"): ["GHSA-foo"],
+                ("foo", "1.0.0"): [
+                    FakeVulnerability("GHSA-foo", ("1.0.1",))
+                ],
                 ("foo-extra", "1.0.0"): ["GHSA-foo-extra"],
             },
         )

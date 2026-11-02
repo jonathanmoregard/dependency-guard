@@ -19,8 +19,9 @@ ID/private key or installation token.
 1. Every changed resolved package, including transitives, is checked for update
    type, registry age, and OSV findings. New packages are ineligible.
 1. The shorter security cooldown applies only to an exact Dependabot-advised
-   package for which OSV reports a vulnerability on the old version but not on
-   the new version. GHSA/alert metadata is ignored; all other packages keep
+   package when the new version exactly equals an OSV `fixed` event for a
+   vulnerability reported on the old version and absent from the new version.
+   GHSA/alert metadata is ignored; later releases and all other packages keep
    their normal cooldown.
 1. Registry, OSV, metadata, and parse failures fail closed.
 1. npm packages that gain an install script are ineligible.
