@@ -35,6 +35,9 @@ output and PR links under a proof record ID such as
    try to merge a PR whose required check is failing. Record GitHub's rejection.
    Then make the check pass and confirm native auto-merge merges only the exact
    evaluated head SHA.
+1. **Gate disarm authority:** an armed auto-merge on a Dependabot PR is disabled
+   by the gate's `GITHUB_TOKEN` (`pull-requests: write`) — confirm the API
+   accepts it without `contents: write`; record the run URL.
 
 The proof passes only if the App cannot push to the protected branch, cannot
 bypass required checks, and cannot merge a different head from the one gated.

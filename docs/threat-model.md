@@ -50,7 +50,9 @@ ID/private key or installation token.
    It uses that permission only to query and disable an existing auto-merge
    request after a non-eligible Dependabot verdict. Query or revocation failure
    fails the required gate, and revocation runs inside that job so a later job
-   cannot race the required check turning green.
+   cannot race the required check turning green. After revocation, the gate
+   posts one best-effort PR comment with the verdict and first reason; comment
+   failure does not hide a successful revocation or fail the job.
 1. The App may bypass the review ruleset only in pull-request mode. It has no
    bypass on the required-checks ruleset, so it cannot merge a failing PR.
 1. Live mode requires a recorded ruleset proof. Dry-run is the default.

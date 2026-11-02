@@ -52,6 +52,8 @@ if "view" in args:
     print(os.environ.get("GH_VIEW_OUTPUT", "false"))
 elif "--disable-auto" in args and os.environ.get("GH_FAIL") == "disable":
     raise SystemExit(1)
+elif "comment" in args and os.environ.get("GH_FAIL") == "comment":
+    raise SystemExit(1)
 """,
         encoding="utf-8",
     )
@@ -104,21 +106,41 @@ class WorkflowTests(unittest.TestCase):
             workflow,
         )
         script = workflow_step_script("gate.yml", "Disarm stale auto-merge")
+        finalize = workflow_step_script("gate.yml", "Finalize verdict")
         with tempfile.TemporaryDirectory() as tempdir:
             directory = Path(tempdir)
             fake_gh(directory)
             log = directory / "gh.log"
+            (directory / "verdict.json").write_text(
+                '{"verdict":"ineligible","reasons":["more than one commit"]}',
+                encoding="utf-8",
+            )
             environment = os.environ.copy()
             environment.update(
                 {
+                    "CONTEXT_VERDICT": "",
+                    "EVALUATED_VERDICT": "ineligible",
+                    "GITHUB_OUTPUT": str(directory / "output"),
                     "GH_LOG": str(log),
                     "GH_TOKEN": "test-token",
                     "GH_VIEW_OUTPUT": "true",
                     "GITHUB_REPOSITORY": "owner/repo",
+                    "IDENTITY_REASON": "",
+                    "IDENTITY_VERDICT": "",
                     "PATH": f"{directory}:{environment['PATH']}",
                     "PR_NUMBER": "17",
+                    "RUNNER_TEMP": str(directory),
+                    "VERDICT": "ineligible",
                 }
             )
+            finalized = subprocess.run(
+                ["bash", "-c", finalize],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(finalized.returncode, 0, finalized.stderr)
             success = subprocess.run(
                 ["bash", "-c", script],
                 check=False,
@@ -127,7 +149,12 @@ class WorkflowTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(success.returncode, 0, success.stderr)
-            self.assertIn("--disable-auto", log.read_text(encoding="utf-8"))
+            calls = log.read_text(encoding="utf-8").splitlines()
+            self.assertTrue(any("--disable-auto" in call for call in calls))
+            comments = [call for call in calls if "pr comment" in call]
+            self.assertEqual(len(comments), 1)
+            self.assertIn("ineligible", comments[0])
+            self.assertIn("more than one commit", comments[0])
 
             for failure in ("view", "disable"):
                 with self.subTest(failure=failure):
@@ -140,6 +167,16 @@ class WorkflowTests(unittest.TestCase):
                         text=True,
                     )
                     self.assertNotEqual(failed.returncode, 0)
+
+            environment["GH_FAIL"] = "comment"
+            comment_failed = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(comment_failed.returncode, 0, comment_failed.stderr)
 
     def test_automerge_rechecks_current_head_before_enabling(self):
         script = workflow_step_script("automerge.yml", "Enable native auto-merge")
@@ -261,7 +298,9 @@ class WorkflowTests(unittest.TestCase):
                     "CONTEXT_VERDICT": "",
                     "EVALUATED_VERDICT": "",
                     "GITHUB_OUTPUT": str(output),
+                    "IDENTITY_REASON": "could not verify called workflow identity",
                     "IDENTITY_VERDICT": "ineligible",
+                    "RUNNER_TEMP": str(Path(tempdir)),
                 }
             )
             result = subprocess.run(
@@ -274,6 +313,12 @@ class WorkflowTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("verdict=ineligible", output.read_text(encoding="utf-8"))
+            self.assertEqual(
+                (Path(tempdir) / "dependency-guard-reason.txt").read_text(
+                    encoding="utf-8"
+                ),
+                "could not verify called workflow identity",
+            )
 
 
 if __name__ == "__main__":
