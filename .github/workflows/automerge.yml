@@ -1,0 +1,114 @@
+name: dependency guard automerge
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: dry-run or live
+        type: string
+        default: dry-run
+      ruleset-proof:
+        description: Record ID for a completed ruleset proof
+        type: string
+        default: ""
+      verdict:
+        description: Verdict emitted by the gate workflow
+        type: string
+        required: true
+      head-sha:
+        description: Exact pull request head SHA evaluated by the gate
+        type: string
+        required: true
+      pr-number:
+        description: Pull request number
+        type: number
+        required: true
+    secrets:
+      guard-merger-app-id:
+        required: false
+      guard-merger-private-key:
+        required: false
+
+permissions: {}
+
+jobs:
+  validate:
+    if: inputs.verdict == 'eligible'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Validate mode and evaluated head
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          if os.environ["MODE"] not in ("dry-run", "live"):
+              raise SystemExit("mode must be dry-run or live")
+          if not re.fullmatch(r"[0-9a-f]{40}", os.environ["HEAD_SHA"]):
+              raise SystemExit("head-sha must be a full commit SHA")
+          PY
+
+  dry-run:
+    needs: validate
+    if: inputs.verdict == 'eligible' && inputs.mode == 'dry-run'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Mark pull request as eligible
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-label dependency-guard:would-merge
+      - name: Write dry-run summary
+        run: |
+          {
+            echo "## dependency-guard automerge"
+            echo
+            echo "Dry-run: this eligible pull request would be queued for squash auto-merge."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  live:
+    needs: validate
+    if: inputs.verdict == 'eligible' && inputs.mode == 'live'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require ruleset proof and App credentials
+        env:
+          APP_ID: ${{ secrets.guard-merger-app-id }}
+          APP_PRIVATE_KEY: ${{ secrets.guard-merger-private-key }}
+          RULESET_PROOF: ${{ inputs.ruleset-proof }}
+        run: |
+          test -n "${RULESET_PROOF}" || { echo "live mode requires ruleset-proof" >&2; exit 1; }
+          test -n "${APP_ID}" || { echo "live mode requires guard-merger-app-id" >&2; exit 1; }
+          test -n "${APP_PRIVATE_KEY}" || { echo "live mode requires guard-merger-private-key" >&2; exit 1; }
+
+      - name: Mint guard-merger installation token
+        id: app-token
+        uses: actions/create-github-app-token@0000000000000000000000000000000000000000 # TODO-PIN actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.guard-merger-app-id }}
+          private-key: ${{ secrets.guard-merger-private-key }}
+
+      - name: Enable native auto-merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --auto --squash --match-head-commit "${HEAD_SHA}"
+
+      - name: Write live summary
+        run: |
+          {
+            echo "## dependency-guard automerge"
+            echo
+            echo "Eligible pull request queued for squash auto-merge by guard-merger."
+          } >> "${GITHUB_STEP_SUMMARY}"

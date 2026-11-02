@@ -1,0 +1,161 @@
+name: dependency guard gate
+
+on:
+  workflow_call:
+    inputs:
+      patch-cooldown-days:
+        description: Cooldown for patch releases
+        type: number
+        default: 3
+      minor-cooldown-days:
+        description: Cooldown for minor releases
+        type: number
+        default: 7
+      security-cooldown-hours:
+        description: Cooldown for the advised package in a security PR
+        type: number
+        default: 8
+      cargo-directory:
+        description: Directory containing Cargo.toml and Cargo.lock
+        type: string
+        default: .
+      npm-directory:
+        description: Directory containing package.json and package-lock.json
+        type: string
+        default: .
+    outputs:
+      verdict:
+        description: red, ineligible, eligible, or not-dependency
+        value: ${{ jobs.gate.outputs.verdict }}
+      head-sha:
+        description: Pull request head SHA evaluated by the gate
+        value: ${{ jobs.gate.outputs.head-sha }}
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      verdict: ${{ steps.evaluate.outputs.verdict }}
+      head-sha: ${{ steps.context.outputs.head-sha }}
+    steps:
+      - name: Record trusted context
+        id: context
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # In a reusable job github.workflow_ref identifies the caller. The
+          # job_workflow_sha context identifies this called workflow's commit.
+          TOOL_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          head = os.environ["HEAD_SHA"]
+          tool = os.environ["TOOL_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", head):
+              raise SystemExit("pull request head SHA is unavailable")
+          if not re.fullmatch(r"[0-9a-f]{40}", tool):
+              raise SystemExit("called workflow SHA is unavailable")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"head-sha={head}\n")
+          PY
+
+      - name: Check out gate implementation
+        uses: actions/checkout@0000000000000000000000000000000000000000 # TODO-PIN actions/checkout@v4
+        with:
+          repository: jonathanmoregard/dependency-guard
+          ref: ${{ github.job_workflow_sha }}
+          path: .dependency-guard/tool
+          persist-credentials: false
+
+      - name: Check out base as data
+        uses: actions/checkout@0000000000000000000000000000000000000000 # TODO-PIN actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .dependency-guard/base
+          persist-credentials: false
+
+      - name: Check out head as data
+        uses: actions/checkout@0000000000000000000000000000000000000000 # TODO-PIN actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .dependency-guard/head
+          persist-credentials: false
+
+      - name: Fetch commit and file metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+            > "${RUNNER_TEMP}/commits.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+            > "${RUNNER_TEMP}/files.json"
+
+      - name: Read Dependabot metadata
+        id: metadata
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        uses: dependabot/fetch-metadata@0000000000000000000000000000000000000000 # TODO-PIN dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Save Dependabot metadata as data
+        env:
+          ALERT_STATE: ${{ steps.metadata.outputs.alert-state }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          GHSA_ID: ${{ steps.metadata.outputs.ghsa-id }}
+          PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          metadata = {
+              "alert-state": os.environ["ALERT_STATE"],
+              "dependency-names": os.environ["DEPENDENCY_NAMES"],
+              "ghsa-id": os.environ["GHSA_ID"],
+              "package-ecosystem": os.environ["PACKAGE_ECOSYSTEM"],
+              "update-type": os.environ["UPDATE_TYPE"],
+          }
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "metadata.json"), "w", encoding="utf-8") as output:
+              json.dump(metadata, output)
+          PY
+
+      - name: Evaluate dependency gate
+        id: evaluate
+        env:
+          BASE_ROOT: ${{ github.workspace }}/.dependency-guard/base
+          CARGO_DIR: ${{ inputs.cargo-directory }}
+          CHANGED_FILES_FILE: ${{ runner.temp }}/files.json
+          COMMITS_FILE: ${{ runner.temp }}/commits.json
+          HEAD_ROOT: ${{ github.workspace }}/.dependency-guard/head
+          METADATA_FILE: ${{ runner.temp }}/metadata.json
+          MINOR_DAYS: ${{ inputs.minor-cooldown-days }}
+          NPM_DIR: ${{ inputs.npm-directory }}
+          PATCH_DAYS: ${{ inputs.patch-cooldown-days }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          SECURITY_HOURS: ${{ inputs.security-cooldown-hours }}
+        working-directory: .dependency-guard/tool
+        run: |
+          set +e
+          python3 -m dependency_guard.gate > "${RUNNER_TEMP}/verdict.json"
+          gate_status=$?
+          set -e
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "verdict.json"), encoding="utf-8") as source:
+              verdict = json.load(source)["verdict"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"verdict={verdict}\n")
+          PY
+          exit "${gate_status}"
