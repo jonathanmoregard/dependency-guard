@@ -7,7 +7,10 @@ updates:
       interval: daily
     rebase-strategy: auto
     cooldown:
-      default-days: 3
+      # Non-semver versions wait the longest window; the gate re-checks
+      # every changed package's own publish age regardless.
+      default-days: 7
+      semver-patch-days: 3
       semver-minor-days: 7
       semver-major-days: 14
     groups:
@@ -23,7 +26,10 @@ updates:
       interval: daily
     rebase-strategy: auto
     cooldown:
-      default-days: 3
+      # Non-semver versions wait the longest window; the gate re-checks
+      # every changed package's own publish age regardless.
+      default-days: 7
+      semver-patch-days: 3
       semver-minor-days: 7
       semver-major-days: 14
     groups:
@@ -39,8 +45,9 @@ updates:
       interval: daily
     rebase-strategy: auto
     cooldown:
-      default-days: 3
-      semver-minor-days: 7
+      # Actions are never auto-merged; a week gives compromised tags time
+      # to be noticed before a human reviews the bump.
+      default-days: 7
       semver-major-days: 14
     groups:
       actions-majors:

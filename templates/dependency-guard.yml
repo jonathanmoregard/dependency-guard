@@ -42,5 +42,5 @@ jobs:
       head-sha: ${{ needs.gate.outputs.head-sha }}
       pr-number: ${{ github.event.pull_request.number }}
     secrets:
-      guard-merger-app-id: ${{ secrets.GUARD_MERGER_APP_ID }}
+      guard-merger-client-id: ${{ secrets.GUARD_MERGER_APP_ID }}
       guard-merger-private-key: ${{ secrets.GUARD_MERGER_PRIVATE_KEY }}

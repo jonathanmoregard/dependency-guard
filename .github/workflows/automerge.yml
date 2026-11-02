@@ -24,7 +24,7 @@ on:
         type: number
         required: true
     secrets:
-      guard-merger-app-id:
+      guard-merger-client-id:
         required: false
       guard-merger-private-key:
         required: false
@@ -81,20 +81,25 @@ jobs:
     steps:
       - name: Require ruleset proof and App credentials
         env:
-          APP_ID: ${{ secrets.guard-merger-app-id }}
+          CLIENT_ID: ${{ secrets.guard-merger-client-id }}
           APP_PRIVATE_KEY: ${{ secrets.guard-merger-private-key }}
           RULESET_PROOF: ${{ inputs.ruleset-proof }}
         run: |
           test -n "${RULESET_PROOF}" || { echo "live mode requires ruleset-proof" >&2; exit 1; }
-          test -n "${APP_ID}" || { echo "live mode requires guard-merger-app-id" >&2; exit 1; }
+          test -n "${CLIENT_ID}" || { echo "live mode requires guard-merger-client-id" >&2; exit 1; }
           test -n "${APP_PRIVATE_KEY}" || { echo "live mode requires guard-merger-private-key" >&2; exit 1; }
 
       - name: Mint guard-merger installation token
         id: app-token
-        uses: actions/create-github-app-token@0000000000000000000000000000000000000000 # TODO-PIN actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ secrets.guard-merger-app-id }}
+          client-id: ${{ secrets.guard-merger-client-id }}
           private-key: ${{ secrets.guard-merger-private-key }}
+          # Scope the installation token to this repository and to exactly
+          # what enabling auto-merge needs.
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Enable native auto-merge
         env:
