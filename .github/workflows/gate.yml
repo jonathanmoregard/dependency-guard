@@ -140,9 +140,7 @@ jobs:
 
       - name: Save Dependabot metadata as data
         env:
-          ALERT_STATE: ${{ steps.metadata.outputs.alert-state }}
           DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
-          GHSA_ID: ${{ steps.metadata.outputs.ghsa-id }}
           PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
           UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
         run: |
@@ -151,9 +149,7 @@ jobs:
           import os
 
           metadata = {
-              "alert-state": os.environ["ALERT_STATE"],
               "dependency-names": os.environ["DEPENDENCY_NAMES"],
-              "ghsa-id": os.environ["GHSA_ID"],
               "package-ecosystem": os.environ["PACKAGE_ECOSYSTEM"],
               "update-type": os.environ["UPDATE_TYPE"],
           }

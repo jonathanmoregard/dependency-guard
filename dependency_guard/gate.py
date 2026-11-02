@@ -98,14 +98,6 @@ def _metadata_names(metadata: dict[str, object]) -> set[str]:
     }
 
 
-def _is_security_update(metadata: dict[str, object]) -> bool:
-    for key in ("ghsa-id", "alert-state"):
-        value = str(metadata.get(key, "")).strip().lower()
-        if value not in ("", "false", "none", "null"):
-            return True
-    return False
-
-
 def _commits_are_trusted(commits: Iterable[object]) -> bool:
     found = False
     for commit in commits:
@@ -124,26 +116,29 @@ def _commits_are_trusted(commits: Iterable[object]) -> bool:
     return found
 
 
-def _check_osv(
+def _osv_vulns(
     registry: Registry,
     ecosystem: str,
     name: str,
     version: str,
     red_reasons: list[str],
     ineligible_reasons: list[str],
-) -> None:
+    *,
+    reject_findings: bool,
+) -> set[str] | None:
     try:
-        vulnerabilities = registry.osv_vulns(ecosystem, name, version)
+        vulnerabilities = set(registry.osv_vulns(ecosystem, name, version))
     except Exception:
         ineligible_reasons.append(
             f"could not verify OSV for {ecosystem}:{name}@{version}"
         )
-        return
-    if vulnerabilities:
+        return None
+    if reject_findings and vulnerabilities:
         red_reasons.append(
             f"OSV reports {', '.join(sorted(vulnerabilities))} for "
             f"{ecosystem}:{name}@{version}"
         )
+    return vulnerabilities
 
 
 def evaluate_gate(
@@ -200,10 +195,7 @@ def evaluate_gate(
 
     ineligible_reasons.extend(lock_diff.ineligible_reasons)
 
-    security_update = _is_security_update(metadata)
     advised_names = _metadata_names(metadata)
-    if security_update and not advised_names:
-        ineligible_reasons.append("could not verify the advised security package")
 
     for package in lock_diff.added:
         package_results.append(
@@ -212,13 +204,14 @@ def evaluate_gate(
         ineligible_reasons.append(
             f"added package: {package.ecosystem}:{package.name}@{package.version}"
         )
-        _check_osv(
+        _osv_vulns(
             registry,
             package.ecosystem,
             package.name,
             package.version,
             red_reasons,
             ineligible_reasons,
+            reject_findings=True,
         )
 
     for change in lock_diff.changed:
@@ -228,14 +221,31 @@ def evaluate_gate(
                 change.ecosystem, change.name, change.old, change.new, update_type
             )
         )
-        _check_osv(
+        new_vulnerabilities = _osv_vulns(
             registry,
             change.ecosystem,
             change.name,
             change.new,
             red_reasons,
             ineligible_reasons,
+            reject_findings=True,
         )
+        security_update = False
+        if change.name in advised_names:
+            old_vulnerabilities = _osv_vulns(
+                registry,
+                change.ecosystem,
+                change.name,
+                change.old,
+                red_reasons,
+                ineligible_reasons,
+                reject_findings=False,
+            )
+            security_update = (
+                old_vulnerabilities is not None
+                and new_vulnerabilities is not None
+                and bool(old_vulnerabilities - new_vulnerabilities)
+            )
         if update_type is None:
             ineligible_reasons.append(
                 f"non-semver or non-forward update: {change.name} "
@@ -256,7 +266,7 @@ def evaluate_gate(
                 f"npm package gained an install script: {change.name}@{change.new}"
             )
         cooldown = timedelta(days=patch_days if update_type == "patch" else minor_days)
-        if security_update and change.name in advised_names:
+        if security_update:
             cooldown = timedelta(hours=security_hours)
         try:
             published = registry.publish_time(

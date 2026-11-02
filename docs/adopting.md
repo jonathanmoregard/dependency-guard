@@ -75,3 +75,10 @@ alternate-registry, unresolved, or integrity-free npm entry stays manual.
 Only Cargo packages from crates.io's canonical git index or sparse index are
 eligible. Changed or added git and alternate-registry packages stay manual, as
 does any added, removed, or changed workspace/path package without a `source`.
+
+The shorter security cooldown is deterministic and package-specific. For an
+exact package name reported by Dependabot metadata, OSV must report at least
+one vulnerability for the old version that it no longer reports for the new
+version. GHSA metadata fields are not used. Every other changed package keeps
+its normal patch/minor cooldown, and an OSV error keeps the normal cooldown
+while also making the gate ineligible.

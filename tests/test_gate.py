@@ -24,9 +24,9 @@ class FakeRegistry:
         return NOW - self.ages.get(name, timedelta(days=30))
 
     def osv_vulns(self, ecosystem, name, version):
-        if self.osv_error == name:
+        if self.osv_error in (name, (name, version)):
             raise RuntimeError("OSV unavailable")
-        return self.vulns.get(name, [])
+        return self.vulns.get((name, version), self.vulns.get(name, []))
 
 
 def verified_commits(login=DEPENDABOT, verified=True):
@@ -244,7 +244,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result.verdict, "ineligible")
         self.assertIn("non-crates.io source: direct", result.reasons)
 
-    def test_security_pr_uses_eight_hours_only_for_advised_package(self):
+    def test_osv_fixed_vulnerability_uses_security_cooldown_for_advised_package(self):
         self.write_cargo(
             [("direct", "1.0.0"), ("transitive", "1.0.0")],
             [("direct", "1.0.1"), ("transitive", "1.0.1")],
@@ -253,23 +253,83 @@ class GateTests(unittest.TestCase):
             "package-ecosystem": "cargo",
             "dependency-names": "direct",
             "update-type": "version-update:semver-patch",
-            "ghsa-id": "GHSA-test",
+        }
+        registry = FakeRegistry(
+            ages={
+                "direct": timedelta(hours=8, minutes=1),
+                "transitive": timedelta(days=4),
+            },
+            vulns={("direct", "1.0.0"): ["GHSA-fixed"]},
+        )
+
+        result = self.evaluate(registry=registry, metadata=metadata)
+
+        self.assertEqual(result.verdict, "eligible")
+
+    def test_ghsa_metadata_does_not_shorten_cooldown_without_osv_fix(self):
+        self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
+        metadata = {
+            "package-ecosystem": "cargo",
+            "dependency-names": "direct",
+            "update-type": "version-update:semver-patch",
+            "ghsa-id": "GHSA-unavailable-to-this-token",
             "alert-state": "open",
         }
-        too_young = FakeRegistry(
-            ages={"direct": timedelta(hours=7, minutes=59), "transitive": timedelta(days=4)}
+        registry = FakeRegistry(
+            ages={"direct": timedelta(hours=9)},
+            vulns={
+                ("direct", "1.0.0"): ["GHSA-still-present"],
+                ("direct", "1.0.1"): ["GHSA-still-present"],
+            },
         )
-        old_enough = FakeRegistry(
-            ages={"direct": timedelta(hours=8, minutes=1), "transitive": timedelta(days=4)}
+
+        result = self.evaluate(registry=registry, metadata=metadata)
+
+        self.assertEqual(result.verdict, "red")
+        self.assertTrue(any("72h cooldown" in reason for reason in result.reasons))
+
+    def test_security_cooldown_uses_exact_advised_package_name(self):
+        self.write_cargo(
+            [("foo", "1.0.0"), ("foo-extra", "1.0.0")],
+            [("foo", "1.0.1"), ("foo-extra", "1.0.1")],
         )
-        self.assertEqual(
-            self.evaluate(registry=too_young, metadata=metadata).verdict,
-            "ineligible",
+        metadata = {
+            "package-ecosystem": "cargo",
+            "dependency-names": "foo",
+            "update-type": "version-update:semver-patch",
+        }
+        registry = FakeRegistry(
+            ages={"foo": timedelta(hours=9), "foo-extra": timedelta(hours=9)},
+            vulns={
+                ("foo", "1.0.0"): ["GHSA-foo"],
+                ("foo-extra", "1.0.0"): ["GHSA-foo-extra"],
+            },
         )
-        self.assertEqual(
-            self.evaluate(registry=old_enough, metadata=metadata).verdict,
-            "eligible",
+
+        result = self.evaluate(registry=registry, metadata=metadata)
+
+        self.assertEqual(result.verdict, "ineligible")
+        cooldown_reasons = [reason for reason in result.reasons if "cooldown" in reason]
+        self.assertEqual(len(cooldown_reasons), 1)
+        self.assertIn("foo-extra@1.0.1", cooldown_reasons[0])
+
+    def test_osv_error_keeps_normal_cooldown_and_existing_ineligible_rule(self):
+        self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
+        metadata = {
+            "package-ecosystem": "cargo",
+            "dependency-names": "direct",
+            "update-type": "version-update:semver-patch",
+        }
+        registry = FakeRegistry(
+            ages={"direct": timedelta(hours=9)},
+            osv_error=("direct", "1.0.0"),
         )
+
+        result = self.evaluate(registry=registry, metadata=metadata)
+
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertTrue(any("could not verify OSV" in reason for reason in result.reasons))
+        self.assertTrue(any("72h cooldown" in reason for reason in result.reasons))
 
     def test_old_patch_is_eligible(self):
         self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
