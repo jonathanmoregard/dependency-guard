@@ -191,6 +191,43 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result.verdict, "ineligible")
         self.assertTrue(any("install script" in reason for reason in result.reasons))
 
+    def test_npm_non_registry_source_is_ineligible(self):
+        base = {
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "root", "version": "1.0.0"},
+                "node_modules/pkg": {
+                    "version": "1.0.0",
+                    "resolved": "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz",
+                    "integrity": "sha512-old",
+                },
+            },
+        }
+        head = json.loads(json.dumps(base))
+        head["packages"]["node_modules/pkg"] = {
+            "version": "1.0.1",
+            "resolved": "git+https://github.com/example/pkg.git",
+            "integrity": "sha512-new",
+        }
+        (self.root / "base" / "package-lock.json").write_text(
+            json.dumps(base), encoding="utf-8"
+        )
+        (self.root / "head" / "package-lock.json").write_text(
+            json.dumps(head), encoding="utf-8"
+        )
+
+        result = self.evaluate(
+            changed_files=["package.json", "package-lock.json"],
+            metadata={
+                "package-ecosystem": "npm",
+                "dependency-names": "pkg",
+                "update-type": "version-update:semver-patch",
+            },
+        )
+
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertIn("non-registry source: pkg", result.reasons)
+
     def test_security_pr_uses_eight_hours_only_for_advised_package(self):
         self.write_cargo(
             [("direct", "1.0.0"), ("transitive", "1.0.0")],

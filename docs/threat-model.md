@@ -20,6 +20,9 @@ ID/private key or installation token.
    type, registry age, and OSV findings. New packages are ineligible.
 1. Registry, OSV, metadata, and parse failures fail closed.
 1. npm packages that gain an install script are ineligible.
+1. Changed and added npm entries must resolve from the HTTPS npmjs registry and
+   include lockfile integrity data; git, file, HTTP, alternate, and missing
+   sources are ineligible.
 1. Third-party actions and caller references are pinned to full commit SHAs.
 1. The gate validates GitHub OIDC `job_workflow_ref` and `job_workflow_sha`
    claims before it checks out executable code from the called workflow repo.

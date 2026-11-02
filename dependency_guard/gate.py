@@ -198,6 +198,8 @@ def evaluate_gate(
         red_reasons.append(f"could not parse {LOCKFILES[ecosystem]}")
         return GateResult("red", red_reasons + ineligible_reasons, [])
 
+    ineligible_reasons.extend(lock_diff.ineligible_reasons)
+
     security_update = _is_security_update(metadata)
     advised_names = _metadata_names(metadata)
     if security_update and not advised_names:

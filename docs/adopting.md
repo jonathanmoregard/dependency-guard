@@ -67,3 +67,7 @@ Keep `mode: dry-run` for at least seven days. Check that every eligible PR gets
 the label, every unsupported or major update stays manual, and every red result
 fails the required gate. Then set `mode: live` and set `ruleset-proof` to the
 proof record ID. Live mode fails if the proof ID or either App secret is empty.
+
+Only npm packages resolved from `https://registry.npmjs.org/` with lockfile
+integrity data are eligible. A changed or added git, file, plain-HTTP,
+alternate-registry, unresolved, or integrity-free npm entry stays manual.

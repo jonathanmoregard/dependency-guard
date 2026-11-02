@@ -19,6 +19,8 @@ class LockedPackage:
     version: str
     identity: str
     has_install_script: bool = False
+    resolved: str | None = None
+    integrity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class LockDiff:
     changed: list[PackageChange]
     added: list[LockedPackage]
     removed: list[LockedPackage]
+    ineligible_reasons: list[str]
 
 
 def _read_cargo(path: Path) -> dict[tuple[str, str], list[LockedPackage]]:
@@ -90,12 +93,16 @@ def _read_npm(path: Path) -> dict[str, LockedPackage]:
             version = package.get("version")
             if not isinstance(version, str):
                 raise LockfileError("package-lock entry has no version")
+            resolved = package.get("resolved")
+            integrity = package.get("integrity")
             result[package_path] = LockedPackage(
                 "npm",
                 _npm_name(package_path, package),
                 version,
                 package_path,
                 package.get("hasInstallScript") is True,
+                resolved if isinstance(resolved, str) else None,
+                integrity if isinstance(integrity, str) else None,
             )
         return result
     except (OSError, UnicodeError, json.JSONDecodeError, LockfileError) as error:
@@ -127,7 +134,17 @@ def _cargo_diff(base_path: Path, head_path: Path) -> LockDiff:
             )
         removed.extend(old_remaining[pair_count:])
         added.extend(new_remaining[pair_count:])
-    return LockDiff(changed, added, removed)
+    return LockDiff(changed, added, removed, [])
+
+
+def _npm_source_reasons(package: LockedPackage) -> list[str]:
+    if not package.resolved or not package.resolved.startswith(
+        "https://registry.npmjs.org/"
+    ):
+        return [f"non-registry source: {package.name}"]
+    if not package.integrity:
+        return [f"missing integrity: {package.name}"]
+    return []
 
 
 def _npm_diff(base_path: Path, head_path: Path) -> LockDiff:
@@ -136,26 +153,30 @@ def _npm_diff(base_path: Path, head_path: Path) -> LockDiff:
     changed: list[PackageChange] = []
     added: list[LockedPackage] = []
     removed: list[LockedPackage] = []
+    ineligible_reasons: list[str] = []
     for key in sorted(base.keys() | head.keys()):
         old = base.get(key)
         new = head.get(key)
         if old is None:
             added.append(new)
+            ineligible_reasons.extend(_npm_source_reasons(new))
         elif new is None:
             removed.append(old)
-        elif old.version != new.version:
-            changed.append(
-                PackageChange(
-                    "npm",
-                    new.name,
-                    old.version,
-                    new.version,
-                    key,
-                    old.has_install_script,
-                    new.has_install_script,
+        elif old != new:
+            ineligible_reasons.extend(_npm_source_reasons(new))
+            if old.version != new.version:
+                changed.append(
+                    PackageChange(
+                        "npm",
+                        new.name,
+                        old.version,
+                        new.version,
+                        key,
+                        old.has_install_script,
+                        new.has_install_script,
+                    )
                 )
-            )
-    return LockDiff(changed, added, removed)
+    return LockDiff(changed, added, removed, ineligible_reasons)
 
 
 def diff_lockfiles(
