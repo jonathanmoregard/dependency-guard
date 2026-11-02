@@ -107,6 +107,13 @@ jobs:
           HEAD_SHA: ${{ inputs.head-sha }}
           PR_NUMBER: ${{ inputs.pr-number }}
         run: |
+          set -euo pipefail
+          current_head=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --json headRefOid --jq '.headRefOid')
+          if [[ "${current_head}" != "${HEAD_SHA}" ]]; then
+            echo "pull request head changed after dependency gate evaluation" >&2
+            exit 1
+          fi
           gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
             --auto --squash --match-head-commit "${HEAD_SHA}"
 

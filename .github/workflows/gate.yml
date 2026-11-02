@@ -39,9 +39,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      pull-requests: read
+      # Write is used only to revoke stale auto-merge after a non-eligible
+      # verdict; revocation must finish before this required job concludes.
+      pull-requests: write
     outputs:
-      verdict: ${{ steps.evaluate.outputs.verdict }}
+      verdict: ${{ steps.final.outputs.verdict }}
       head-sha: ${{ steps.context.outputs.head-sha }}
     steps:
       - name: Record trusted context
@@ -189,3 +191,29 @@ jobs:
               output.write(f"verdict={verdict}\n")
           PY
           exit "${gate_status}"
+
+      - name: Finalize verdict
+        id: final
+        if: always()
+        env:
+          EVALUATED_VERDICT: ${{ steps.evaluate.outputs.verdict }}
+        run: |
+          verdict="${EVALUATED_VERDICT:-red}"
+          case "${verdict}" in
+            red|ineligible|eligible|not-dependency) ;;
+            *) verdict=red ;;
+          esac
+          echo "verdict=${verdict}" >> "${GITHUB_OUTPUT}"
+
+      - name: Disarm stale auto-merge
+        if: always() && github.event.pull_request.user.login == 'dependabot[bot]' && steps.final.outputs.verdict != 'eligible'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          auto_merge=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [[ "${auto_merge}" == "true" ]]; then
+            gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --disable-auto
+          fi
