@@ -214,6 +214,11 @@ class WorkflowTests(unittest.TestCase):
                     "if: steps.identity.outputs.verified == 'true'", block
                 )
 
+    def test_gate_reads_actor_from_workflow_context(self):
+        evaluate = workflow_step_block("gate.yml", "Evaluate dependency gate")
+
+        self.assertIn("ACTOR: ${{ github.actor }}", evaluate)
+
     def test_dependabot_missing_oidc_becomes_ineligible_without_step_failure(self):
         script = workflow_step_script("gate.yml", "Verify called workflow identity")
         code = embedded_python(script)

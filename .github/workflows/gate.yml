@@ -192,6 +192,7 @@ jobs:
         id: evaluate
         if: steps.identity.outputs.verified == 'true'
         env:
+          ACTOR: ${{ github.actor }}
           BASE_ROOT: ${{ github.workspace }}/.dependency-guard/base
           CARGO_DIR: ${{ inputs.cargo-directory }}
           CHANGED_FILES_FILE: ${{ runner.temp }}/files.json

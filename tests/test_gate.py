@@ -80,6 +80,7 @@ class GateTests(unittest.TestCase):
     def evaluate(self, registry=None, **overrides):
         values = {
             "pr_author": DEPENDABOT,
+            "actor": DEPENDABOT,
             "commits": verified_commits(),
             "changed_files": ["Cargo.toml", "Cargo.lock"],
             "base_root": self.root / "base",
@@ -111,6 +112,22 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             self.evaluate(commits=verified_commits(verified=False)).verdict, "red"
         )
+
+    def test_non_dependabot_workflow_actor_is_red(self):
+        self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
+
+        result = self.evaluate(actor="write-user")
+
+        self.assertEqual(result.verdict, "red")
+        self.assertIn("pushed by write-user, not Dependabot", result.reasons)
+
+    def test_more_than_one_commit_is_red(self):
+        self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
+
+        result = self.evaluate(commits=verified_commits() + verified_commits())
+
+        self.assertEqual(result.verdict, "red")
+        self.assertIn("more than one commit", result.reasons)
 
     def test_non_manifest_file_is_red(self):
         self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])

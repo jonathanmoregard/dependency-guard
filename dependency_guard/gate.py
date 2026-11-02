@@ -147,6 +147,7 @@ def _osv_vulns(
 def evaluate_gate(
     *,
     pr_author: str,
+    actor: str,
     commits: list[object],
     changed_files: list[str],
     base_root: str | Path,
@@ -165,6 +166,10 @@ def evaluate_gate(
     red_reasons: list[str] = []
     ineligible_reasons: list[str] = []
     package_results: list[PackageVerdict] = []
+    if actor != DEPENDABOT:
+        red_reasons.append(f"pushed by {actor or 'unknown'}, not Dependabot")
+    if len(commits) > 1:
+        red_reasons.append("more than one commit")
     if not _commits_are_trusted(commits):
         red_reasons.append("a commit is not Dependabot-authored and GitHub-verified")
 
@@ -311,6 +316,7 @@ def _read_json(path: str, *, pages: bool = False) -> object:
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a dependency update PR")
     parser.add_argument("--pr-author", default=os.environ.get("PR_AUTHOR"))
+    parser.add_argument("--actor", default=os.environ.get("ACTOR"))
     parser.add_argument("--commits-file", default=os.environ.get("COMMITS_FILE"))
     parser.add_argument(
         "--changed-files-file", default=os.environ.get("CHANGED_FILES_FILE")
@@ -342,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     required = {
         "pr-author": args.pr_author,
+        "actor": args.actor,
         "commits-file": args.commits_file,
         "changed-files-file": args.changed_files_file,
         "base-root": args.base_root,
@@ -373,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     result = evaluate_gate(
         pr_author=args.pr_author,
+        actor=args.actor,
         commits=commits,
         changed_files=changed_files,
         base_root=args.base_root,

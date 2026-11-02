@@ -14,7 +14,9 @@ ID/private key or installation token.
 
 ## Controls
 
-1. Every PR commit must be authored by `dependabot[bot]` and GitHub-verified.
+1. The workflow run actor must be `dependabot[bot]`, read directly from the
+   GitHub Actions context, and the PR must have exactly one commit. That commit
+   must be authored by `dependabot[bot]` and GitHub-verified.
 1. Only configured manifests and lockfiles may change.
 1. Every changed resolved package, including transitives, is checked for update
    type, registry age, and OSV findings. New packages are ineligible.
@@ -52,6 +54,11 @@ ID/private key or installation token.
 1. Live mode requires a recorded ruleset proof. Dry-run is the default.
 
 ## Residual risk
+
+An actor with repository write access can still do anything that write access
+allows. Requiring Dependabot as the workflow actor and a single commit closes
+this gate's auto-merge-without-review path for a forged Dependabot-authored
+commit; it does not reduce the actor's underlying repository authority.
 
 An aged package can be healthy according to its registry and OSV while still
 containing a malicious payload. A registry, maintainer, GitHub, OSV, or pinned

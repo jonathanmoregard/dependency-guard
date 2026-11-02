@@ -4,11 +4,12 @@ Reusable GitHub Actions for a narrow class of Dependabot updates. The gate can
 queue patch and minor library updates for native GitHub auto-merge after fixed
 cooldowns and required checks. It does not use AI review.
 
-The gate reads Cargo and npm lockfiles as data. It rejects foreign or unverified
-commits, unrelated files, new dependencies, major and 0.x-minor updates, young
-releases, OSV findings, and newly introduced npm install scripts. Missing data
-fails closed. GitHub Actions, Nix, Docker, Python, Terraform, and other update
-types remain manual.
+The gate reads Cargo and npm lockfiles as data. It requires a Dependabot-started
+workflow run and exactly one verified Dependabot commit. It rejects unrelated
+files, new dependencies, major and 0.x-minor updates, young releases, OSV
+findings, and newly introduced npm install scripts. Missing data fails closed.
+GitHub Actions, Nix, Docker, Python, Terraform, and other update types remain
+manual.
 
 Start with [the adoption guide](docs/adopting.md), copy the templates, pin every
 reference, and run dry-run mode for at least seven days. Live mode requires a
