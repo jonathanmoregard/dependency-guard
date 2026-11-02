@@ -63,11 +63,14 @@ jobs:
           if not re.fullmatch(r"[0-9a-f]{40}", head):
               raise SystemExit("pull request head SHA is unavailable")
 
-          request_url = os.environ["ID_TOKEN_REQUEST_URL"]
+          request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+          request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+          if not request_url or not request_token:
+              raise SystemExit("GitHub OIDC environment is unavailable")
           separator = "&" if "?" in request_url else "?"
           request = Request(
               request_url + separator + urlencode({"audience": "dependency-guard"}),
-              headers={"Authorization": "Bearer " + os.environ["ID_TOKEN_REQUEST_TOKEN"]},
+              headers={"Authorization": "Bearer " + request_token},
           )
           with urlopen(request, timeout=10) as response:
               token = json.load(response)["value"]
