@@ -1,0 +1,37 @@
+name: dependency guard cooldown retry
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+      contents: read
+    steps:
+      - name: Retry cooldown pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r pr_number head_sha; do
+            [[ -n "${pr_number}" && -n "${head_sha}" ]] || continue
+            run_id=$(gh run list --repo "${GITHUB_REPOSITORY}" \
+              --workflow dependency-guard.yml --commit "${head_sha}" \
+              --event pull_request --limit 1 --json databaseId,status \
+              --jq '.[] | select(.status == "completed") | .databaseId')
+            if [[ -z "${run_id}" ]]; then
+              echo "No completed dependency-guard run for PR #${pr_number} at ${head_sha}"
+              continue
+            fi
+            gh run rerun "${run_id}" --repo "${GITHUB_REPOSITORY}"
+          done < <(
+            gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+              --label dependency-guard:cooldown --limit 20 \
+              --json number,headRefOid \
+              --jq '.[] | [.number, .headRefOid] | @tsv'
+          )

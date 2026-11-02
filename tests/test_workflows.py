@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import re
@@ -11,7 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def workflow_step_block(workflow: str, step_name: str) -> str:
-    source = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    path = ROOT / ".github" / "workflows" / workflow
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise AssertionError(f"workflow does not exist: {workflow}") from error
     marker = f"      - name: {step_name}\n"
     try:
         start = source.index(marker) + len(marker)
@@ -50,6 +55,10 @@ if "view" in args:
     if os.environ.get("GH_FAIL") == "view":
         raise SystemExit(1)
     print(os.environ.get("GH_VIEW_OUTPUT", "false"))
+elif args[:2] == ["pr", "list"]:
+    print(os.environ.get("GH_PR_LIST_OUTPUT", ""))
+elif args[:2] == ["run", "list"]:
+    print(os.environ.get("GH_RUN_LIST_OUTPUT", ""))
 elif "--disable-auto" in args and os.environ.get("GH_FAIL") == "disable":
     raise SystemExit(1)
 elif "comment" in args and os.environ.get("GH_FAIL") == "comment":
@@ -62,6 +71,182 @@ elif "comment" in args and os.environ.get("GH_FAIL") == "comment":
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_finalize_marks_only_cooldown_reasons_retryable(self):
+        script = workflow_step_script("gate.yml", "Finalize verdict")
+        cases = (
+            (
+                ["pkg@1.0.1 has not completed its 72h cooldown"],
+                "true",
+            ),
+            (
+                [
+                    "pkg@1.0.1 has not completed its 72h cooldown",
+                    "same-version entry changed: transitive",
+                ],
+                "false",
+            ),
+        )
+        for reasons, expected in cases:
+            with self.subTest(reasons=reasons), tempfile.TemporaryDirectory() as tempdir:
+                directory = Path(tempdir)
+                (directory / "verdict.json").write_text(
+                    json.dumps({"verdict": "ineligible", "reasons": reasons}),
+                    encoding="utf-8",
+                )
+                output = directory / "output"
+                environment = os.environ.copy()
+                environment.update(
+                    {
+                        "CONTEXT_VERDICT": "",
+                        "EVALUATED_VERDICT": "ineligible",
+                        "GITHUB_OUTPUT": str(output),
+                        "IDENTITY_REASON": "",
+                        "IDENTITY_VERDICT": "",
+                        "RUNNER_TEMP": str(directory),
+                    }
+                )
+
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    check=False,
+                    capture_output=True,
+                    env=environment,
+                    text=True,
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(
+                    f"cooldown-only={expected}",
+                    output.read_text(encoding="utf-8"),
+                )
+
+    def test_gate_reconciles_cooldown_retry_label(self):
+        script = workflow_step_script("gate.yml", "Update cooldown retry label")
+        with tempfile.TemporaryDirectory() as tempdir:
+            directory = Path(tempdir)
+            fake_gh(directory)
+            log = directory / "gh.log"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "GH_LOG": str(log),
+                    "GH_TOKEN": "test-token",
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "PATH": f"{directory}:{environment['PATH']}",
+                    "PR_NUMBER": "17",
+                }
+            )
+
+            environment["COOLDOWN_ONLY"] = "true"
+            added = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            self.assertIn(
+                "--add-label dependency-guard:cooldown",
+                log.read_text(encoding="utf-8"),
+            )
+
+            log.write_text("", encoding="utf-8")
+            environment.update({"COOLDOWN_ONLY": "false", "GH_VIEW_OUTPUT": "true"})
+            removed = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(removed.returncode, 0, removed.stderr)
+            self.assertIn(
+                "--remove-label dependency-guard:cooldown",
+                log.read_text(encoding="utf-8"),
+            )
+
+    def test_retry_workflow_reruns_latest_gate_for_current_heads(self):
+        script = workflow_step_script("retry.yml", "Retry cooldown pull requests")
+        with tempfile.TemporaryDirectory() as tempdir:
+            directory = Path(tempdir)
+            fake_gh(directory)
+            log = directory / "gh.log"
+            pull_requests = "\n".join(
+                f"{number}\t{number:040x}" for number in range(1, 21)
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "GH_LOG": str(log),
+                    "GH_PR_LIST_OUTPUT": pull_requests,
+                    "GH_RUN_LIST_OUTPUT": "9001",
+                    "GH_TOKEN": "test-token",
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "PATH": f"{directory}:{environment['PATH']}",
+                }
+            )
+
+            result = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = log.read_text(encoding="utf-8").splitlines()
+            reruns = [call for call in calls if call.startswith("run rerun ")]
+            self.assertEqual(len(reruns), 20)
+            self.assertTrue(
+                all(
+                    call == "run rerun 9001 --repo owner/repo"
+                    for call in reruns
+                )
+            )
+            for number in range(1, 21):
+                self.assertTrue(
+                    any(
+                        call.startswith("run list ")
+                        and f"--commit {number:040x}" in call
+                        for call in calls
+                    )
+                )
+
+    def test_retry_workflow_and_caller_are_least_privilege_and_bounded(self):
+        retry_path = ROOT / ".github" / "workflows" / "retry.yml"
+        self.assertTrue(retry_path.exists(), "retry workflow must exist")
+        retry = retry_path.read_text(encoding="utf-8")
+        self.assertIn("on:\n  workflow_call:", retry)
+        self.assertIn("permissions: {}", retry)
+        self.assertRegex(
+            retry,
+            r"retry:\n(?:.*\n)*?    permissions:\n"
+            r"      actions: write\n"
+            r"      pull-requests: read\n"
+            r"      contents: read",
+        )
+        self.assertNotIn("actions/checkout@", retry)
+        self.assertIn("--limit 20", retry)
+
+        caller = (ROOT / "templates" / "dependency-guard.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('cron: "17 */6 * * *"', caller)
+        self.assertIn("workflow_dispatch:", caller)
+        self.assertIn("if: github.event_name == 'pull_request'", caller)
+        self.assertIn(
+            "if: github.event_name == 'schedule' || "
+            "github.event_name == 'workflow_dispatch'",
+            caller,
+        )
+        self.assertRegex(
+            caller,
+            r"uses: jonathanmoregard/dependency-guard/\.github/workflows/"
+            r"retry\.yml@[0-9a-f]{40}",
+        )
+
     def test_oidc_step_reports_missing_github_environment(self):
         script = workflow_step_script("gate.yml", "Verify called workflow identity")
         code = embedded_python(script)

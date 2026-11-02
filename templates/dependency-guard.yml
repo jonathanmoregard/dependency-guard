@@ -10,11 +10,15 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
   gate:
+    if: github.event_name == 'pull_request'
     permissions:
       contents: read
       # Used solely so the called gate can read its OIDC job_workflow_sha claim
@@ -32,6 +36,7 @@ jobs:
       npm-directory: .
 
   automerge:
+    if: github.event_name == 'pull_request'
     needs: gate
     permissions:
       contents: read
@@ -46,3 +51,11 @@ jobs:
     secrets:
       guard-merger-client-id: ${{ secrets.GUARD_MERGER_CLIENT_ID }}
       guard-merger-private-key: ${{ secrets.GUARD_MERGER_PRIVATE_KEY }}
+
+  retry:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: write
+      pull-requests: read
+      contents: read
+    uses: jonathanmoregard/dependency-guard/.github/workflows/retry.yml@0000000000000000000000000000000000000000 # TODO-PIN jonathanmoregard/dependency-guard@v0.1
