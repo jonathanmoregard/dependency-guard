@@ -28,6 +28,8 @@ class LockedPackage:
     has_install_script: bool = False
     resolved: str | None = None
     integrity: str | None = None
+    workspace_link: bool = False
+    entry_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,18 @@ def _read_npm(path: Path) -> dict[str, LockedPackage]:
                 continue
             if not isinstance(package_path, str) or not isinstance(package, dict):
                 raise LockfileError("package-lock.json contains an invalid package")
+            name = _npm_name(package_path, package)
+            fingerprint = json.dumps(package, sort_keys=True, separators=(",", ":"))
+            if package.get("link") is True:
+                result[package_path] = LockedPackage(
+                    "npm",
+                    name,
+                    "",
+                    package_path,
+                    workspace_link=True,
+                    entry_fingerprint=fingerprint,
+                )
+                continue
             version = package.get("version")
             if not isinstance(version, str):
                 raise LockfileError("package-lock entry has no version")
@@ -104,12 +118,13 @@ def _read_npm(path: Path) -> dict[str, LockedPackage]:
             integrity = package.get("integrity")
             result[package_path] = LockedPackage(
                 "npm",
-                _npm_name(package_path, package),
+                name,
                 version,
                 package_path,
-                package.get("hasInstallScript") is True,
-                resolved if isinstance(resolved, str) else None,
-                integrity if isinstance(integrity, str) else None,
+                has_install_script=package.get("hasInstallScript") is True,
+                resolved=resolved if isinstance(resolved, str) else None,
+                integrity=integrity if isinstance(integrity, str) else None,
+                entry_fingerprint=fingerprint,
             )
         return result
     except (OSError, UnicodeError, json.JSONDecodeError, LockfileError) as error:
@@ -176,10 +191,20 @@ def _npm_diff(base_path: Path, head_path: Path) -> LockDiff:
         old = base.get(key)
         new = head.get(key)
         if old is None:
-            added.append(new)
-            ineligible_reasons.extend(_npm_source_reasons(new))
+            if new.workspace_link:
+                ineligible_reasons.append(f"workspace link changed: {new.name}")
+            else:
+                added.append(new)
+                ineligible_reasons.extend(_npm_source_reasons(new))
         elif new is None:
-            removed.append(old)
+            if old.workspace_link:
+                ineligible_reasons.append(f"workspace link changed: {old.name}")
+            else:
+                removed.append(old)
+        elif old.workspace_link or new.workspace_link:
+            if old != new:
+                link = new if new.workspace_link else old
+                ineligible_reasons.append(f"workspace link changed: {link.name}")
         elif old != new:
             ineligible_reasons.extend(_npm_source_reasons(new))
             if old.version != new.version:

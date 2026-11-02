@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from dependency_guard.lockdiff import diff_lockfiles
+from dependency_guard.lockdiff import LockfileError, diff_lockfiles
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -215,6 +215,82 @@ class LockDiffTests(unittest.TestCase):
                 result = diff_lockfiles("cargo", base, head)
 
                 self.assertNotIn("non-crates.io source", " ".join(result.ineligible_reasons))
+
+    def test_npm_ignores_unchanged_workspace_link_without_version(self):
+        document = {
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "root", "version": "1.0.0"},
+                "node_modules/workspace": {
+                    "resolved": "packages/workspace",
+                    "link": True,
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as tempdir:
+            base = Path(tempdir) / "base.json"
+            head = Path(tempdir) / "head.json"
+            base.write_text(json.dumps(document), encoding="utf-8")
+            head.write_text(json.dumps(document), encoding="utf-8")
+
+            try:
+                result = diff_lockfiles("npm", base, head)
+            except LockfileError as error:
+                self.fail(f"unchanged workspace link raised: {error}")
+
+        self.assertEqual(result.changed, [])
+        self.assertEqual(result.added, [])
+        self.assertEqual(result.removed, [])
+        self.assertEqual(result.ineligible_reasons, [])
+
+    def test_npm_rejects_added_removed_or_changed_workspace_link(self):
+        link = {"resolved": "packages/workspace", "link": True}
+        changed_link = {"resolved": "packages/renamed", "link": True}
+        cases = {
+            "added": ({}, {"node_modules/workspace": link}),
+            "removed": ({"node_modules/workspace": link}, {}),
+            "changed": (
+                {"node_modules/workspace": link},
+                {"node_modules/workspace": changed_link},
+            ),
+        }
+        for mode, (base_entries, head_entries) in cases.items():
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tempdir:
+                base = Path(tempdir) / "base.json"
+                head = Path(tempdir) / "head.json"
+                base.write_text(
+                    json.dumps(
+                        {
+                            "lockfileVersion": 3,
+                            "packages": {
+                                "": {"name": "root", "version": "1.0.0"},
+                                **base_entries,
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                head.write_text(
+                    json.dumps(
+                        {
+                            "lockfileVersion": 3,
+                            "packages": {
+                                "": {"name": "root", "version": "1.0.0"},
+                                **head_entries,
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                try:
+                    result = diff_lockfiles("npm", base, head)
+                except LockfileError as error:
+                    self.fail(f"{mode} workspace link raised: {error}")
+
+                self.assertIn(
+                    "workspace link changed: workspace", result.ineligible_reasons
+                )
 
 
 if __name__ == "__main__":

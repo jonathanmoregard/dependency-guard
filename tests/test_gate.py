@@ -244,6 +244,35 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result.verdict, "ineligible")
         self.assertIn("non-crates.io source: direct", result.reasons)
 
+    def test_npm_workspace_link_change_is_ineligible_not_red(self):
+        base = {
+            "lockfileVersion": 3,
+            "packages": {"": {"name": "root", "version": "1.0.0"}},
+        }
+        head = json.loads(json.dumps(base))
+        head["packages"]["node_modules/workspace"] = {
+            "resolved": "packages/workspace",
+            "link": True,
+        }
+        (self.root / "base" / "package-lock.json").write_text(
+            json.dumps(base), encoding="utf-8"
+        )
+        (self.root / "head" / "package-lock.json").write_text(
+            json.dumps(head), encoding="utf-8"
+        )
+
+        result = self.evaluate(
+            changed_files=["package.json", "package-lock.json"],
+            metadata={
+                "package-ecosystem": "npm",
+                "dependency-names": "workspace",
+                "update-type": "version-update:semver-patch",
+            },
+        )
+
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertIn("workspace link changed: workspace", result.reasons)
+
     def test_osv_fixed_vulnerability_uses_security_cooldown_for_advised_package(self):
         self.write_cargo(
             [("direct", "1.0.0"), ("transitive", "1.0.0")],
