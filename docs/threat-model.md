@@ -33,6 +33,9 @@ ID/private key or installation token.
 1. Third-party actions and caller references are pinned to full commit SHAs.
 1. The gate validates GitHub OIDC `job_workflow_ref` and `job_workflow_sha`
    claims before it checks out executable code from the called workflow repo.
+   `id-token: write` is used solely to read `job_workflow_sha`; non-Dependabot
+   PRs return `not-dependency` before any OIDC request or checkout. Missing or
+   invalid OIDC on a Dependabot PR is ineligible and still reaches disarm.
 1. `--match-head-commit` prevents a verdict from being reused after the PR head
    changes. The automerge job also reads `headRefOid` immediately before
    enabling auto-merge and fails if it no longer matches the evaluated SHA.

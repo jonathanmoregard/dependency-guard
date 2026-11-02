@@ -46,12 +46,30 @@ jobs:
       verdict: ${{ steps.final.outputs.verdict }}
       head-sha: ${{ steps.context.outputs.head-sha }}
     steps:
-      - name: Record trusted context
+      - name: Classify pull request
         id: context
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # github.workflow_ref identifies the caller in this reusable job, so
-          # only the OIDC job_workflow_* claims identify the called workflow.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          echo "head-sha=${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+          if [[ "${PR_AUTHOR}" != "dependabot[bot]" ]]; then
+            echo "is-dependabot=false" >> "${GITHUB_OUTPUT}"
+            echo "verdict=not-dependency" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "pull request head SHA is unavailable" >&2
+            exit 1
+          fi
+          echo "is-dependabot=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify called workflow identity
+        id: identity
+        if: steps.context.outputs.is-dependabot == 'true'
+        # github.workflow_ref identifies the caller in this reusable job, so
+        # only the OIDC job_workflow_* claims identify the called workflow.
         run: |
           python3 - <<'PY'
           import base64
@@ -61,51 +79,61 @@ jobs:
           from urllib.parse import urlencode
           from urllib.request import Request, urlopen
 
-          head = os.environ["HEAD_SHA"]
-          if not re.fullmatch(r"[0-9a-f]{40}", head):
-              raise SystemExit("pull request head SHA is unavailable")
+          reason = "could not verify called workflow identity"
+          try:
+              request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+              request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+              if not request_url or not request_token:
+                  raise RuntimeError("GitHub OIDC environment is unavailable")
+              separator = "&" if "?" in request_url else "?"
+              request = Request(
+                  request_url + separator + urlencode({"audience": "dependency-guard"}),
+                  headers={"Authorization": "Bearer " + request_token},
+              )
+              with urlopen(request, timeout=10) as response:
+                  token = json.load(response)["value"]
+              encoded_claims = token.split(".")[1]
+              encoded_claims += "=" * (-len(encoded_claims) % 4)
+              claims = json.loads(base64.urlsafe_b64decode(encoded_claims))
 
-          request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
-          request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-          if not request_url or not request_token:
-              raise SystemExit("GitHub OIDC environment is unavailable")
-          separator = "&" if "?" in request_url else "?"
-          request = Request(
-              request_url + separator + urlencode({"audience": "dependency-guard"}),
-              headers={"Authorization": "Bearer " + request_token},
-          )
-          with urlopen(request, timeout=10) as response:
-              token = json.load(response)["value"]
-          encoded_claims = token.split(".")[1]
-          encoded_claims += "=" * (-len(encoded_claims) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(encoded_claims))
-
-          tool = claims.get("job_workflow_sha", "")
-          expected_ref = (
-              "jonathanmoregard/dependency-guard/.github/workflows/gate.yml@" + tool
-          )
-          if claims.get("iss") != "https://token.actions.githubusercontent.com":
-              raise SystemExit("unexpected OIDC issuer")
-          if claims.get("aud") != "dependency-guard":
-              raise SystemExit("unexpected OIDC audience")
-          if not re.fullmatch(r"[0-9a-f]{40}", tool):
-              raise SystemExit("called workflow SHA is unavailable")
-          if claims.get("job_workflow_ref") != expected_ref:
-              raise SystemExit("called workflow must be pinned to its full SHA")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"head-sha={head}\n")
-              output.write(f"tool-sha={tool}\n")
+              tool = claims.get("job_workflow_sha", "")
+              expected_ref = (
+                  "jonathanmoregard/dependency-guard/.github/workflows/gate.yml@" + tool
+              )
+              if claims.get("iss") != "https://token.actions.githubusercontent.com":
+                  raise ValueError("unexpected OIDC issuer")
+              if claims.get("aud") != "dependency-guard":
+                  raise ValueError("unexpected OIDC audience")
+              if not re.fullmatch(r"[0-9a-f]{40}", tool):
+                  raise ValueError("called workflow SHA is unavailable")
+              if claims.get("job_workflow_ref") != expected_ref:
+                  raise ValueError("called workflow must be pinned to its full SHA")
+          except Exception as error:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("verified=false\n")
+                  output.write("verdict=ineligible\n")
+                  output.write(f"reason={reason}\n")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write(f"## dependency-guard\n\nVerdict: **ineligible**\n\n1. {reason}\n")
+                  if str(error) == "GitHub OIDC environment is unavailable":
+                      summary.write(f"1. {error}\n")
+          else:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("verified=true\n")
+                  output.write(f"tool-sha={tool}\n")
           PY
 
       - name: Check out gate implementation
+        if: steps.identity.outputs.verified == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: jonathanmoregard/dependency-guard
-          ref: ${{ steps.context.outputs.tool-sha }}
+          ref: ${{ steps.identity.outputs.tool-sha }}
           path: .dependency-guard/tool
           persist-credentials: false
 
       - name: Check out base as data
+        if: steps.identity.outputs.verified == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -113,6 +141,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out head as data
+        if: steps.identity.outputs.verified == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -120,6 +149,7 @@ jobs:
           persist-credentials: false
 
       - name: Fetch commit and file metadata
+        if: steps.identity.outputs.verified == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -133,12 +163,13 @@ jobs:
 
       - name: Read Dependabot metadata
         id: metadata
-        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        if: steps.identity.outputs.verified == 'true'
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ github.token }}
 
       - name: Save Dependabot metadata as data
+        if: steps.identity.outputs.verified == 'true'
         env:
           DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
           PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
@@ -159,6 +190,7 @@ jobs:
 
       - name: Evaluate dependency gate
         id: evaluate
+        if: steps.identity.outputs.verified == 'true'
         env:
           BASE_ROOT: ${{ github.workspace }}/.dependency-guard/base
           CARGO_DIR: ${{ inputs.cargo-directory }}
@@ -192,9 +224,11 @@ jobs:
         id: final
         if: always()
         env:
+          CONTEXT_VERDICT: ${{ steps.context.outputs.verdict }}
           EVALUATED_VERDICT: ${{ steps.evaluate.outputs.verdict }}
+          IDENTITY_VERDICT: ${{ steps.identity.outputs.verdict }}
         run: |
-          verdict="${EVALUATED_VERDICT:-red}"
+          verdict="${EVALUATED_VERDICT:-${IDENTITY_VERDICT:-${CONTEXT_VERDICT:-red}}}"
           case "${verdict}" in
             red|ineligible|eligible|not-dependency) ;;
             *) verdict=red ;;

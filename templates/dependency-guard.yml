@@ -17,8 +17,8 @@ jobs:
   gate:
     permissions:
       contents: read
-      # Lets the called gate verify its own pinned SHA from GitHub's OIDC
-      # job_workflow_sha claim. It does not grant GitHub repository writes.
+      # Used solely so the called gate can read its OIDC job_workflow_sha claim
+      # before checking out executable code. It grants no repository writes.
       id-token: write
       # Lets the gate revoke stale auto-merge before a non-eligible required
       # check concludes; it never uses this token to enable or perform a merge.

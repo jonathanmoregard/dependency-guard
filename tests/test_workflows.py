@@ -10,7 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def workflow_step_script(workflow: str, step_name: str) -> str:
+def workflow_step_block(workflow: str, step_name: str) -> str:
     source = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
     marker = f"      - name: {step_name}\n"
     try:
@@ -18,7 +18,11 @@ def workflow_step_script(workflow: str, step_name: str) -> str:
     except ValueError as error:
         raise AssertionError(f"workflow has no {step_name!r} step") from error
     end = source.find("\n      - name: ", start)
-    block = source[start:] if end == -1 else source[start:end]
+    return source[start:] if end == -1 else source[start:end]
+
+
+def workflow_step_script(workflow: str, step_name: str) -> str:
+    block = workflow_step_block(workflow, step_name)
     run_marker = "        run: |\n"
     run_start = block.index(run_marker) + len(run_marker)
     return textwrap.dedent(block[run_start:])
@@ -57,7 +61,7 @@ elif "--disable-auto" in args and os.environ.get("GH_FAIL") == "disable":
 
 class WorkflowTests(unittest.TestCase):
     def test_oidc_step_reports_missing_github_environment(self):
-        script = workflow_step_script("gate.yml", "Record trusted context")
+        script = workflow_step_script("gate.yml", "Verify called workflow identity")
         code = embedded_python(script)
         with tempfile.TemporaryDirectory() as tempdir:
             environment = os.environ.copy()
@@ -68,7 +72,7 @@ class WorkflowTests(unittest.TestCase):
             environment.update(
                 {
                     "GITHUB_OUTPUT": str(Path(tempdir) / "output"),
-                    "HEAD_SHA": "a" * 40,
+                    "GITHUB_STEP_SUMMARY": str(Path(tempdir) / "summary"),
                 }
             )
             result = subprocess.run(
@@ -79,8 +83,10 @@ class WorkflowTests(unittest.TestCase):
                 text=True,
             )
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("GitHub OIDC environment is unavailable", result.stderr)
+            summary = (Path(tempdir) / "summary").read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GitHub OIDC environment is unavailable", summary)
         self.assertNotIn("KeyError", result.stderr)
 
     def test_gate_disarm_is_inside_job_and_fails_closed(self):
@@ -163,6 +169,106 @@ class WorkflowTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("--auto", log.read_text(encoding="utf-8"))
+
+    def test_non_dependabot_path_skips_oidc_and_checkout(self):
+        script = workflow_step_script("gate.yml", "Classify pull request")
+        with tempfile.TemporaryDirectory() as tempdir:
+            output = Path(tempdir) / "output"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "GITHUB_OUTPUT": str(output),
+                    "HEAD_SHA": "a" * 40,
+                    "PR_AUTHOR": "human",
+                }
+            )
+            result = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = output.read_text(encoding="utf-8")
+            self.assertIn("is-dependabot=false", outputs)
+            self.assertIn("verdict=not-dependency", outputs)
+
+        identity = workflow_step_block("gate.yml", "Verify called workflow identity")
+        self.assertIn(
+            "if: steps.context.outputs.is-dependabot == 'true'", identity
+        )
+        for step_name in (
+            "Check out gate implementation",
+            "Check out base as data",
+            "Check out head as data",
+            "Fetch commit and file metadata",
+            "Read Dependabot metadata",
+            "Save Dependabot metadata as data",
+            "Evaluate dependency gate",
+        ):
+            with self.subTest(step=step_name):
+                block = workflow_step_block("gate.yml", step_name)
+                self.assertIn(
+                    "if: steps.identity.outputs.verified == 'true'", block
+                )
+
+    def test_dependabot_missing_oidc_becomes_ineligible_without_step_failure(self):
+        script = workflow_step_script("gate.yml", "Verify called workflow identity")
+        code = embedded_python(script)
+        with tempfile.TemporaryDirectory() as tempdir:
+            output = Path(tempdir) / "output"
+            summary = Path(tempdir) / "summary"
+            environment = os.environ.copy()
+            environment.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
+            environment.pop("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None)
+            environment.update(
+                {
+                    "GITHUB_OUTPUT": str(output),
+                    "GITHUB_STEP_SUMMARY": str(summary),
+                }
+            )
+            result = subprocess.run(
+                ["python3", "-c", code],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = output.read_text(encoding="utf-8")
+            self.assertIn("verified=false", outputs)
+            self.assertIn("verdict=ineligible", outputs)
+            self.assertIn(
+                "could not verify called workflow identity",
+                summary.read_text(encoding="utf-8"),
+            )
+
+    def test_identity_failure_flows_to_final_verdict(self):
+        script = workflow_step_script("gate.yml", "Finalize verdict")
+        with tempfile.TemporaryDirectory() as tempdir:
+            output = Path(tempdir) / "output"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "CONTEXT_VERDICT": "",
+                    "EVALUATED_VERDICT": "",
+                    "GITHUB_OUTPUT": str(output),
+                    "IDENTITY_VERDICT": "ineligible",
+                }
+            )
+            result = subprocess.run(
+                ["bash", "-c", script],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("verdict=ineligible", output.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
