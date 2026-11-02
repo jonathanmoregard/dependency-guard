@@ -21,6 +21,8 @@ ID/private key or installation token.
 1. Registry, OSV, metadata, and parse failures fail closed.
 1. npm packages that gain an install script are ineligible.
 1. Third-party actions and caller references are pinned to full commit SHAs.
+1. The gate validates GitHub OIDC `job_workflow_ref` and `job_workflow_sha`
+   claims before it checks out executable code from the called workflow repo.
 1. `--match-head-commit` prevents a verdict from being reused after the PR head
    changes.
 1. The App may bypass the review ruleset only in pull-request mode. It has no

@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
       pull-requests: read
     outputs:
       verdict: ${{ steps.evaluate.outputs.verdict }}
@@ -47,29 +48,55 @@ jobs:
         id: context
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # In a reusable job github.workflow_ref identifies the caller. The
-          # job_workflow_sha context identifies this called workflow's commit.
-          TOOL_SHA: ${{ github.job_workflow_sha }}
+          # github.workflow_ref identifies the caller in this reusable job, so
+          # only the OIDC job_workflow_* claims identify the called workflow.
         run: |
           python3 - <<'PY'
+          import base64
+          import json
           import os
           import re
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
 
           head = os.environ["HEAD_SHA"]
-          tool = os.environ["TOOL_SHA"]
           if not re.fullmatch(r"[0-9a-f]{40}", head):
               raise SystemExit("pull request head SHA is unavailable")
+
+          request_url = os.environ["ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in request_url else "?"
+          request = Request(
+              request_url + separator + urlencode({"audience": "dependency-guard"}),
+              headers={"Authorization": "Bearer " + os.environ["ID_TOKEN_REQUEST_TOKEN"]},
+          )
+          with urlopen(request, timeout=10) as response:
+              token = json.load(response)["value"]
+          encoded_claims = token.split(".")[1]
+          encoded_claims += "=" * (-len(encoded_claims) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(encoded_claims))
+
+          tool = claims.get("job_workflow_sha", "")
+          expected_ref = (
+              "jonathanmoregard/dependency-guard/.github/workflows/gate.yml@" + tool
+          )
+          if claims.get("iss") != "https://token.actions.githubusercontent.com":
+              raise SystemExit("unexpected OIDC issuer")
+          if claims.get("aud") != "dependency-guard":
+              raise SystemExit("unexpected OIDC audience")
           if not re.fullmatch(r"[0-9a-f]{40}", tool):
               raise SystemExit("called workflow SHA is unavailable")
+          if claims.get("job_workflow_ref") != expected_ref:
+              raise SystemExit("called workflow must be pinned to its full SHA")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"head-sha={head}\n")
+              output.write(f"tool-sha={tool}\n")
           PY
 
       - name: Check out gate implementation
         uses: actions/checkout@0000000000000000000000000000000000000000 # TODO-PIN actions/checkout@v4
         with:
           repository: jonathanmoregard/dependency-guard
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ steps.context.outputs.tool-sha }}
           path: .dependency-guard/tool
           persist-credentials: false
 

@@ -58,7 +58,10 @@ Copy `templates/dependency-guard.yml` to
 `.github/workflows/dependency-guard.yml`, replace both `TODO-PIN` values with
 the reviewed release commit SHA, and copy `templates/dependabot.yml` to
 `.github/dependabot.yml`. Adjust only the ecosystem directories and cooldown
-inputs needed by the repository.
+inputs needed by the repository. Keep the caller's `id-token: write` permission:
+the gate requests a token with audience `dependency-guard` and validates its
+`job_workflow_ref` and `job_workflow_sha` claims before checking out executable
+code. Its `GITHUB_TOKEN` still has read-only repository permissions.
 
 Keep `mode: dry-run` for at least seven days. Check that every eligible PR gets
 the label, every unsupported or major update stays manual, and every red result
