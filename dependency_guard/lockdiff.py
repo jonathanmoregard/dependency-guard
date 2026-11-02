@@ -68,7 +68,14 @@ def _read_cargo(path: Path) -> dict[tuple[str, str], list[LockedPackage]]:
             source = package.get("source", LOCAL_CARGO_SOURCE)
             if not all(isinstance(value, str) for value in (name, version, source)):
                 raise LockfileError("Cargo.lock package identity is incomplete")
-            locked = LockedPackage("cargo", name, version, source)
+            fingerprint = json.dumps(package, sort_keys=True, separators=(",", ":"))
+            locked = LockedPackage(
+                "cargo",
+                name,
+                version,
+                source,
+                entry_fingerprint=fingerprint,
+            )
             result.setdefault((name, source), []).append(locked)
         return result
     except (OSError, tomllib.TOMLDecodeError, LockfileError) as error:
@@ -168,7 +175,19 @@ def _cargo_diff(base_path: Path, head_path: Path) -> LockDiff:
             )
         removed.extend(old_remaining[pair_count:])
         added.extend(new_remaining[pair_count:])
-    ineligible_reasons: list[str] = []
+    base_entries: dict[tuple[str, str], list[str]] = {}
+    head_entries: dict[tuple[str, str], list[str]] = {}
+    for packages, entries in ((base, base_entries), (head, head_entries)):
+        for package_group in packages.values():
+            for package in package_group:
+                key = (package.name, package.version)
+                entries.setdefault(key, []).append(package.entry_fingerprint or "")
+    ineligible_reasons = [
+        f"same-version entry changed: {name}"
+        for name, version in sorted(base_entries.keys() & head_entries.keys())
+        if sorted(base_entries[(name, version)])
+        != sorted(head_entries[(name, version)])
+    ]
     for package in [*changed, *added]:
         if package.identity not in CRATES_IO_SOURCES:
             reason = f"non-crates.io source: {package.name}"
@@ -226,7 +245,11 @@ def _npm_diff(base_path: Path, head_path: Path) -> LockDiff:
                 ineligible_reasons.append(f"workspace link changed: {link.name}")
         elif old != new:
             ineligible_reasons.extend(_npm_source_reasons(new))
-            if old.version != new.version:
+            if old.version == new.version:
+                ineligible_reasons.append(
+                    f"same-version entry changed: {new.name}"
+                )
+            else:
                 changed.append(
                     PackageChange(
                         "npm",

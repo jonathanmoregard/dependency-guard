@@ -11,12 +11,32 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def cargo_document(packages):
     sections = ["version = 3"]
-    for name, version, source in packages:
+    for package in packages:
+        name, version, source, *optional_checksum = package
         lines = [f'name = "{name}"', f'version = "{version}"']
         if source is not None:
             lines.append(f'source = "{source}"')
+        if optional_checksum:
+            lines.append(f'checksum = "{optional_checksum[0]}"')
         sections.append("[[package]]\n" + "\n".join(lines))
     return "\n\n".join(sections) + "\n"
+
+
+def npm_document(a_version, b_entry):
+    return {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "root", "version": "1.0.0"},
+            "node_modules/a": {
+                "version": a_version,
+                "resolved": (
+                    f"https://registry.npmjs.org/a/-/a-{a_version}.tgz"
+                ),
+                "integrity": f"sha512-a-{a_version}",
+            },
+            "node_modules/b": b_entry,
+        },
+    }
 
 
 class LockDiffTests(unittest.TestCase):
@@ -46,6 +66,110 @@ class LockDiffTests(unittest.TestCase):
         self.assertEqual(len(result.changed), 1)
         self.assertFalse(result.changed[0].old_has_install_script)
         self.assertTrue(result.changed[0].new_has_install_script)
+
+    def test_npm_rejects_same_version_install_script_change(self):
+        base_entry = {
+            "version": "2.0.0",
+            "resolved": "https://registry.npmjs.org/b/-/b-2.0.0.tgz",
+            "integrity": "sha512-b",
+        }
+        head_entry = {**base_entry, "hasInstallScript": True}
+
+        result = self._npm_same_version_diff(base_entry, head_entry)
+
+        self.assertEqual([change.name for change in result.changed], ["a"])
+        self.assertIn("same-version entry changed: b", result.ineligible_reasons)
+
+    def test_npm_rejects_same_version_integrity_change(self):
+        base_entry = {
+            "version": "2.0.0",
+            "resolved": "https://registry.npmjs.org/b/-/b-2.0.0.tgz",
+            "integrity": "sha512-old",
+        }
+        head_entry = {**base_entry, "integrity": "sha512-new"}
+
+        result = self._npm_same_version_diff(base_entry, head_entry)
+
+        self.assertIn("same-version entry changed: b", result.ineligible_reasons)
+
+    def test_npm_rejects_same_version_resolved_change(self):
+        base_entry = {
+            "version": "2.0.0",
+            "resolved": "https://registry.npmjs.org/b/-/b-2.0.0.tgz",
+            "integrity": "sha512-b",
+        }
+        head_entry = {
+            **base_entry,
+            "resolved": "https://registry.npmjs.org/b/-/b-repacked-2.0.0.tgz",
+        }
+
+        result = self._npm_same_version_diff(base_entry, head_entry)
+
+        self.assertIn("same-version entry changed: b", result.ineligible_reasons)
+
+    def _npm_same_version_diff(self, base_entry, head_entry):
+        with tempfile.TemporaryDirectory() as tempdir:
+            base = Path(tempdir) / "base.json"
+            head = Path(tempdir) / "head.json"
+            base.write_text(
+                json.dumps(npm_document("1.0.0", base_entry)), encoding="utf-8"
+            )
+            head.write_text(
+                json.dumps(npm_document("1.0.1", head_entry)), encoding="utf-8"
+            )
+            return diff_lockfiles("npm", base, head)
+
+    def test_cargo_rejects_same_version_source_change(self):
+        git_index = "registry+https://github.com/rust-lang/crates.io-index"
+        sparse_index = "sparse+https://index.crates.io/"
+        with tempfile.TemporaryDirectory() as tempdir:
+            base = Path(tempdir) / "Cargo.base.lock"
+            head = Path(tempdir) / "Cargo.head.lock"
+            base.write_text(
+                cargo_document(
+                    [("a", "1.0.0", git_index), ("b", "2.0.0", git_index)]
+                ),
+                encoding="utf-8",
+            )
+            head.write_text(
+                cargo_document(
+                    [("a", "1.0.1", git_index), ("b", "2.0.0", sparse_index)]
+                ),
+                encoding="utf-8",
+            )
+
+            result = diff_lockfiles("cargo", base, head)
+
+        self.assertEqual([change.name for change in result.changed], ["a"])
+        self.assertIn("same-version entry changed: b", result.ineligible_reasons)
+
+    def test_cargo_rejects_same_version_checksum_change(self):
+        crates_io = "registry+https://github.com/rust-lang/crates.io-index"
+        with tempfile.TemporaryDirectory() as tempdir:
+            base = Path(tempdir) / "Cargo.base.lock"
+            head = Path(tempdir) / "Cargo.head.lock"
+            base.write_text(
+                cargo_document(
+                    [
+                        ("a", "1.0.0", crates_io, "a-old"),
+                        ("b", "2.0.0", crates_io, "b-old"),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            head.write_text(
+                cargo_document(
+                    [
+                        ("a", "1.0.1", crates_io, "a-new"),
+                        ("b", "2.0.0", crates_io, "b-new"),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = diff_lockfiles("cargo", base, head)
+
+        self.assertIn("same-version entry changed: b", result.ineligible_reasons)
 
     def test_npm_rejects_non_registry_sources_on_changed_and_added_entries(self):
         registry = "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz"
