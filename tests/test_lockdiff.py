@@ -171,6 +171,50 @@ class LockDiffTests(unittest.TestCase):
 
         self.assertIn("same-version entry changed: b", result.ineligible_reasons)
 
+    def test_cargo_ignores_dependency_list_changes_when_a_child_is_bumped(self):
+        crates_io = "registry+https://github.com/rust-lang/crates.io-index"
+        with tempfile.TemporaryDirectory() as tempdir:
+            base = Path(tempdir) / "Cargo.base.lock"
+            head = Path(tempdir) / "Cargo.head.lock"
+            base.write_text(
+                cargo_document(
+                    [
+                        ("foo", "1.2.3", crates_io, "foo-1.2.3"),
+                        ("foo", "2.0.0", crates_io, "foo-2.0.0"),
+                    ]
+                )
+                + (
+                    '[[package]]\nname = "bar"\nversion = "1.0.0"\n'
+                    f'source = "{crates_io}"\nchecksum = "bar-1.0.0"\n'
+                    'dependencies = ["foo 1.2.3", "foo 2.0.0"]\n'
+                ),
+                encoding="utf-8",
+            )
+            head.write_text(
+                cargo_document(
+                    [
+                        ("foo", "1.2.4", crates_io, "foo-1.2.4"),
+                        ("foo", "2.0.0", crates_io, "foo-2.0.0"),
+                    ]
+                )
+                + (
+                    '[[package]]\nname = "bar"\nversion = "1.0.0"\n'
+                    f'source = "{crates_io}"\nchecksum = "bar-1.0.0"\n'
+                    'dependencies = ["foo 1.2.4", "foo 2.0.0"]\n'
+                ),
+                encoding="utf-8",
+            )
+
+            result = diff_lockfiles("cargo", base, head)
+
+        self.assertEqual(
+            [(change.name, change.old, change.new) for change in result.changed],
+            [("foo", "1.2.3", "1.2.4")],
+        )
+        self.assertNotIn(
+            "same-version entry changed: bar", result.ineligible_reasons
+        )
+
     def test_npm_rejects_non_registry_sources_on_changed_and_added_entries(self):
         registry = "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz"
         sources = (

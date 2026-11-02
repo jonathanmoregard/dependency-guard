@@ -173,6 +173,34 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result.verdict, "ineligible")
         self.assertTrue(any("transitive" in reason for reason in result.reasons))
 
+    def test_cooldown_only_is_true_for_only_cooldown_reasons(self):
+        self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
+        result = self.evaluate(
+            registry=FakeRegistry(ages={"direct": timedelta(days=2)})
+        )
+
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertIs(result.as_dict()["cooldown_only"], True)
+
+    def test_cooldown_only_is_false_for_mixed_ineligible_reasons(self):
+        self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
+        result = self.evaluate(
+            registry=FakeRegistry(
+                ages={"direct": timedelta(days=2)}, osv_error="direct"
+            )
+        )
+
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertTrue(any("cooldown" in reason for reason in result.reasons))
+        self.assertIs(result.as_dict()["cooldown_only"], False)
+
+    def test_cooldown_only_is_false_for_eligible_verdict(self):
+        self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
+        result = self.evaluate()
+
+        self.assertEqual(result.verdict, "eligible")
+        self.assertIs(result.as_dict()["cooldown_only"], False)
+
     def test_osv_hit_is_red(self):
         self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])
         result = self.evaluate(registry=FakeRegistry(vulns={"direct": ["MAL-1"]}))

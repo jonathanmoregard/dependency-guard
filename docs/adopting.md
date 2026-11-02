@@ -64,7 +64,14 @@ before checking out executable code. Human and fork PRs short-circuit to
 `not-dependency` without requesting OIDC or checking out any repository. If a
 Dependabot run cannot obtain or validate the identity token, it becomes
 ineligible and the gate still revokes any stale auto-merge request. The gate's
-`GITHUB_TOKEN` has pull-request write permission only for that revocation.
+`GITHUB_TOKEN` has issues write permission only to ensure the cooldown label
+exists and pull-request write permission only to reconcile that label or revoke
+stale auto-merge.
+
+The caller retries cooldown-only verdicts every six hours and can also be run
+with manual workflow dispatch. The gate auto-creates the advisory
+`dependency-guard:cooldown` label used to find those PRs. Keep `actions: write`
+on the caller's `retry` job so it can re-run the existing gate workflow.
 
 Keep `mode: dry-run` for at least seven days. Check that every eligible PR gets
 the label, every unsupported or major update stays manual, and every red result

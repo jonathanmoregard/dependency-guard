@@ -41,12 +41,14 @@ class GateResult:
     verdict: str
     reasons: list[str]
     packages: list[PackageVerdict]
+    cooldown_only: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
             "verdict": self.verdict,
             "reasons": self.reasons,
             "packages": [asdict(package) for package in self.packages],
+            "cooldown_only": self.cooldown_only,
         }
 
     def markdown(self) -> str:
@@ -165,6 +167,7 @@ def evaluate_gate(
 
     red_reasons: list[str] = []
     ineligible_reasons: list[str] = []
+    cooldown_reasons: list[str] = []
     package_results: list[PackageVerdict] = []
     if actor != DEPENDABOT:
         red_reasons.append(f"pushed by {actor or 'unknown'}, not Dependabot")
@@ -287,10 +290,12 @@ def evaluate_gate(
             if published.tzinfo is None:
                 raise ValueError("publish time is not timezone-aware")
             if now.astimezone(timezone.utc) - published.astimezone(timezone.utc) < cooldown:
-                ineligible_reasons.append(
+                reason = (
                     f"{change.name}@{change.new} has not completed its "
                     f"{int(cooldown.total_seconds() // 3600)}h cooldown"
                 )
+                ineligible_reasons.append(reason)
+                cooldown_reasons.append(reason)
         except Exception:
             ineligible_reasons.append(
                 f"could not verify publish time for "
@@ -305,7 +310,17 @@ def evaluate_gate(
         verdict = "ineligible"
     else:
         verdict = "eligible"
-    return GateResult(verdict, red_reasons + ineligible_reasons, package_results)
+    cooldown_only = (
+        verdict == "ineligible"
+        and bool(ineligible_reasons)
+        and len(cooldown_reasons) == len(ineligible_reasons)
+    )
+    return GateResult(
+        verdict,
+        red_reasons + ineligible_reasons,
+        package_results,
+        cooldown_only,
+    )
 
 
 def _read_json(path: str, *, pages: bool = False) -> object:

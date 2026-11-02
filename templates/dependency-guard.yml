@@ -24,8 +24,10 @@ jobs:
       # Used solely so the called gate can read its OIDC job_workflow_sha claim
       # before checking out executable code. It grants no repository writes.
       id-token: write
-      # Lets the gate revoke stale auto-merge before a non-eligible required
-      # check concludes; it never uses this token to enable or perform a merge.
+      # Lets the gate create the advisory cooldown retry label.
+      issues: write
+      # Lets the gate reconcile that label and revoke stale auto-merge before a
+      # non-eligible required check concludes; it never enables or performs a merge.
       pull-requests: write
     uses: jonathanmoregard/dependency-guard/.github/workflows/gate.yml@0000000000000000000000000000000000000000 # TODO-PIN jonathanmoregard/dependency-guard@v0.1
     with:

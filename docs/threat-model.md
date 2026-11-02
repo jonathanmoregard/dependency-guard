@@ -46,13 +46,18 @@ ID/private key or installation token.
 1. `--match-head-commit` prevents a verdict from being reused after the PR head
    changes. The automerge job also reads `headRefOid` immediately before
    enabling auto-merge and fails if it no longer matches the evaluated SHA.
-1. The gate job alone receives `pull-requests: write` on its `GITHUB_TOKEN`.
-   It uses that permission only to query and disable an existing auto-merge
-   request after a non-eligible Dependabot verdict. Query or revocation failure
-   fails the required gate, and revocation runs inside that job so a later job
-   cannot race the required check turning green. After revocation, the gate
-   posts one best-effort PR comment with the verdict and first reason; comment
-   failure does not hide a successful revocation or fail the job.
+1. The retry job only re-runs the gate already defined on the base branch for
+   the PR's current head and never checks out or executes PR code; its label is
+   advisory and cannot make a PR eligible.
+1. The gate job alone receives `issues: write` and `pull-requests: write` on its
+   `GITHUB_TOKEN`. It uses issues write only to create the advisory cooldown
+   label, and pull-request write only to reconcile that label or query and
+   disable an existing auto-merge request after a non-eligible Dependabot
+   verdict. Label failures are warning-only. Query or revocation failure fails
+   the required gate, and revocation runs inside that job so a later job cannot
+   race the required check turning green. After revocation, the gate posts one
+   best-effort PR comment with the verdict and first reason; comment failure
+   does not hide a successful revocation or fail the job.
 1. The App may bypass the review ruleset only in pull-request mode. It has no
    bypass on the required-checks ruleset, so it cannot merge a failing PR.
 1. Live mode requires a recorded ruleset proof. Dry-run is the default.

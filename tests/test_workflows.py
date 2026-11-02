@@ -55,10 +55,17 @@ if "view" in args:
     if os.environ.get("GH_FAIL") == "view":
         raise SystemExit(1)
     print(os.environ.get("GH_VIEW_OUTPUT", "false"))
+elif args[:2] == ["label", "create"]:
+    if os.environ.get("GH_FAIL") == "label-create":
+        raise SystemExit(1)
 elif args[:2] == ["pr", "list"]:
     print(os.environ.get("GH_PR_LIST_OUTPUT", ""))
 elif args[:2] == ["run", "list"]:
     print(os.environ.get("GH_RUN_LIST_OUTPUT", ""))
+elif "--add-label" in args and os.environ.get("GH_FAIL") == "add-label":
+    raise SystemExit(1)
+elif "--remove-label" in args and os.environ.get("GH_FAIL") == "remove-label":
+    raise SystemExit(1)
 elif "--disable-auto" in args and os.environ.get("GH_FAIL") == "disable":
     raise SystemExit(1)
 elif "comment" in args and os.environ.get("GH_FAIL") == "comment":
@@ -71,26 +78,26 @@ elif "comment" in args and os.environ.get("GH_FAIL") == "comment":
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_finalize_marks_only_cooldown_reasons_retryable(self):
+    def test_finalize_reads_structured_cooldown_only(self):
         script = workflow_step_script("gate.yml", "Finalize verdict")
         cases = (
+            ({"cooldown_only": True, "reasons": ["wording is irrelevant"]}, "true"),
             (
-                ["pkg@1.0.1 has not completed its 72h cooldown"],
-                "true",
-            ),
-            (
-                [
-                    "pkg@1.0.1 has not completed its 72h cooldown",
-                    "same-version entry changed: transitive",
-                ],
+                {
+                    "cooldown_only": False,
+                    "reasons": ["pkg@1.0.1 has not completed its 72h cooldown"],
+                },
                 "false",
             ),
+            ({"cooldown_only": "true", "reasons": []}, "false"),
+            ({"reasons": []}, "false"),
         )
-        for reasons, expected in cases:
-            with self.subTest(reasons=reasons), tempfile.TemporaryDirectory() as tempdir:
+        for document, expected in cases:
+            with self.subTest(document=document), tempfile.TemporaryDirectory() as tempdir:
                 directory = Path(tempdir)
+                document["verdict"] = "ineligible"
                 (directory / "verdict.json").write_text(
-                    json.dumps({"verdict": "ineligible", "reasons": reasons}),
+                    json.dumps(document),
                     encoding="utf-8",
                 )
                 output = directory / "output"
@@ -121,6 +128,12 @@ class WorkflowTests(unittest.TestCase):
                 )
 
     def test_gate_reconciles_cooldown_retry_label(self):
+        block = workflow_step_block("gate.yml", "Update cooldown retry label")
+        self.assertIn(
+            "if: always() && github.event.pull_request.user.login == "
+            "'dependabot[bot]'",
+            block,
+        )
         script = workflow_step_script("gate.yml", "Update cooldown retry label")
         with tempfile.TemporaryDirectory() as tempdir:
             directory = Path(tempdir)
@@ -146,10 +159,21 @@ class WorkflowTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(added.returncode, 0, added.stderr)
-            self.assertIn(
-                "--add-label dependency-guard:cooldown",
-                log.read_text(encoding="utf-8"),
+            calls = log.read_text(encoding="utf-8").splitlines()
+            create_index = next(
+                index
+                for index, call in enumerate(calls)
+                if call.startswith("label create dependency-guard:cooldown ")
             )
+            add_index = next(
+                index
+                for index, call in enumerate(calls)
+                if "--add-label dependency-guard:cooldown" in call
+            )
+            self.assertLess(create_index, add_index)
+            self.assertIn("--color ededed", calls[create_index])
+            self.assertIn("--description", calls[create_index])
+            self.assertIn("--force", calls[create_index])
 
             log.write_text("", encoding="utf-8")
             environment.update({"COOLDOWN_ONLY": "false", "GH_VIEW_OUTPUT": "true"})
@@ -165,6 +189,30 @@ class WorkflowTests(unittest.TestCase):
                 "--remove-label dependency-guard:cooldown",
                 log.read_text(encoding="utf-8"),
             )
+
+            for failure, cooldown_only in (
+                ("label-create", "true"),
+                ("add-label", "true"),
+                ("view", "false"),
+                ("remove-label", "false"),
+            ):
+                with self.subTest(failure=failure):
+                    environment.update(
+                        {
+                            "COOLDOWN_ONLY": cooldown_only,
+                            "GH_FAIL": failure,
+                            "GH_VIEW_OUTPUT": "true",
+                        }
+                    )
+                    failed = subprocess.run(
+                        ["bash", "-c", script],
+                        check=False,
+                        capture_output=True,
+                        env=environment,
+                        text=True,
+                    )
+                    self.assertEqual(failed.returncode, 0, failed.stderr)
+                    self.assertIn("::warning::", failed.stdout + failed.stderr)
 
     def test_retry_workflow_reruns_latest_gate_for_current_heads(self):
         script = workflow_step_script("retry.yml", "Retry cooldown pull requests")
@@ -184,6 +232,10 @@ class WorkflowTests(unittest.TestCase):
                     "GH_TOKEN": "test-token",
                     "GITHUB_REPOSITORY": "owner/repo",
                     "PATH": f"{directory}:{environment['PATH']}",
+                    "WORKFLOW_REF": (
+                        "owner/repo/.github/workflows/custom-guard.yml@"
+                        "refs/heads/main"
+                    ),
                 }
             )
 
@@ -209,10 +261,20 @@ class WorkflowTests(unittest.TestCase):
                 self.assertTrue(
                     any(
                         call.startswith("run list ")
+                        and "--workflow custom-guard.yml" in call
                         and f"--commit {number:040x}" in call
                         for call in calls
                     )
                 )
+
+        retry_block = workflow_step_block(
+            "retry.yml", "Retry cooldown pull requests"
+        )
+        retry_script = workflow_step_script(
+            "retry.yml", "Retry cooldown pull requests"
+        )
+        self.assertIn("WORKFLOW_REF: ${{ github.workflow_ref }}", retry_block)
+        self.assertNotIn("${{", retry_script)
 
     def test_retry_workflow_and_caller_are_least_privilege_and_bounded(self):
         retry_path = ROOT / ".github" / "workflows" / "retry.yml"
@@ -362,6 +424,22 @@ class WorkflowTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(comment_failed.returncode, 0, comment_failed.stderr)
+
+    def test_gate_and_caller_allow_repository_label_creation(self):
+        gate = (ROOT / ".github" / "workflows" / "gate.yml").read_text(
+            encoding="utf-8"
+        )
+        caller = (ROOT / "templates" / "dependency-guard.yml").read_text(
+            encoding="utf-8"
+        )
+
+        for workflow in (gate, caller):
+            with self.subTest(workflow=workflow[:40]):
+                self.assertRegex(
+                    workflow,
+                    r"\n  gate:\n(?:.*\n)*?    permissions:\n"
+                    r"(?:.*\n)*?      issues: write",
+                )
 
     def test_automerge_rechecks_current_head_before_enabling(self):
         script = workflow_step_script("automerge.yml", "Enable native auto-merge")

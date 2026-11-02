@@ -68,7 +68,15 @@ def _read_cargo(path: Path) -> dict[tuple[str, str], list[LockedPackage]]:
             source = package.get("source", LOCAL_CARGO_SOURCE)
             if not all(isinstance(value, str) for value in (name, version, source)):
                 raise LockfileError("Cargo.lock package identity is incomplete")
-            fingerprint = json.dumps(package, sort_keys=True, separators=(",", ":"))
+            fingerprint = json.dumps(
+                {
+                    key: value
+                    for key, value in package.items()
+                    if key != "dependencies"
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             locked = LockedPackage(
                 "cargo",
                 name,

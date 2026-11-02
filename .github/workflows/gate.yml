@@ -39,8 +39,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      # Write is used only to revoke stale auto-merge after a non-eligible
-      # verdict; revocation must finish before this required job concludes.
+      # Write is used only to create the cooldown retry label.
+      issues: write
+      # Write is used only to reconcile that label and revoke stale auto-merge;
+      # revocation must finish before this required job concludes.
       pull-requests: write
     outputs:
       verdict: ${{ steps.final.outputs.verdict }}
@@ -244,24 +246,13 @@ jobs:
             python3 - "${RUNNER_TEMP}/verdict.json" "${reason_file}" "${cooldown_file}" <<'PY'
           import json
           from pathlib import Path
-          import re
           import sys
 
           document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           reasons = document.get("reasons", [])
           reason = reasons[0] if reasons and isinstance(reasons[0], str) else "gate did not provide a reason"
           Path(sys.argv[2]).write_text(reason, encoding="utf-8")
-          cooldown_only = (
-              document.get("verdict") == "ineligible"
-              and bool(reasons)
-              and all(
-                  isinstance(item, str)
-                  and re.fullmatch(
-                      r".+@.+ has not completed its [0-9]+h cooldown", item
-                  )
-                  for item in reasons
-              )
-          )
+          cooldown_only = document.get("cooldown_only") is True
           Path(sys.argv[3]).write_text(
               "true" if cooldown_only else "false", encoding="utf-8"
           )
@@ -274,25 +265,38 @@ jobs:
           echo "cooldown-only=$(< "${cooldown_file}")" >> "${GITHUB_OUTPUT}"
 
       - name: Update cooldown retry label
-        if: always()
+        if: always() && github.event.pull_request.user.login == 'dependabot[bot]'
         env:
           COOLDOWN_ONLY: ${{ steps.final.outputs.cooldown-only }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          label="dependency-guard:cooldown"
-          if [[ "${COOLDOWN_ONLY}" == "true" ]]; then
-            gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-              --add-label "${label}"
-          else
-            has_label=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-              --json labels --jq 'any(.labels[]; .name == "dependency-guard:cooldown")')
-            if [[ "${has_label}" == "true" ]]; then
+          update_cooldown_label() {
+            local label="dependency-guard:cooldown"
+            local has_label
+            if [[ "${COOLDOWN_ONLY}" == "true" ]]; then
+              gh label create "${label}" --repo "${GITHUB_REPOSITORY}" \
+                --color ededed \
+                --description "Dependency update waiting for cooldown retry" \
+                --force || return
               gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-                --remove-label "${label}"
+                --add-label "${label}" || return
+            else
+              has_label=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                --json labels --jq 'any(.labels[]; .name == "dependency-guard:cooldown")') \
+                || return
+              if [[ "${has_label}" == "true" ]]; then
+                gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                  --remove-label "${label}" || return
+              fi
             fi
+          }
+
+          if ! failure=$(update_cooldown_label 2>&1); then
+            echo "::warning::Could not update cooldown retry label: ${failure}"
           fi
+          exit 0
 
       - name: Disarm stale auto-merge
         if: always() && github.event.pull_request.user.login == 'dependabot[bot]' && steps.final.outputs.verdict != 'eligible'
