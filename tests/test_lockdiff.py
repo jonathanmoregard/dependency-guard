@@ -292,6 +292,61 @@ class LockDiffTests(unittest.TestCase):
                     "workspace link changed: workspace", result.ineligible_reasons
                 )
 
+    def test_npm_workspace_target_is_ignored_only_while_unchanged(self):
+        root = {
+            "name": "root",
+            "version": "1.0.0",
+            "workspaces": ["packages/utils"],
+        }
+        link = {"resolved": "packages/utils", "link": True}
+        target = {"version": "1.0.0"}
+        common = {"": root, "node_modules/utils": link}
+        cases = {
+            "unchanged": (
+                {**common, "packages/utils": target},
+                {**common, "packages/utils": target},
+                [],
+            ),
+            "added": (
+                common,
+                {**common, "packages/utils": target},
+                ["workspace package changed"],
+            ),
+            "removed": (
+                {**common, "packages/utils": target},
+                common,
+                ["workspace package changed"],
+            ),
+            "changed": (
+                {**common, "packages/utils": target},
+                {**common, "packages/utils": {"version": "1.0.1"}},
+                ["workspace package changed"],
+            ),
+        }
+        for mode, (base_packages, head_packages, reasons) in cases.items():
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tempdir:
+                base = Path(tempdir) / "base.json"
+                head = Path(tempdir) / "head.json"
+                base.write_text(
+                    json.dumps(
+                        {"lockfileVersion": 3, "packages": base_packages}
+                    ),
+                    encoding="utf-8",
+                )
+                head.write_text(
+                    json.dumps(
+                        {"lockfileVersion": 3, "packages": head_packages}
+                    ),
+                    encoding="utf-8",
+                )
+
+                try:
+                    result = diff_lockfiles("npm", base, head)
+                except LockfileError as error:
+                    self.fail(f"{mode} workspace target raised: {error}")
+
+                self.assertEqual(result.ineligible_reasons, reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,7 +75,9 @@ Only npm packages resolved from `https://registry.npmjs.org/` with lockfile
 integrity data are eligible. A changed or added git, file, plain-HTTP,
 alternate-registry, unresolved, or integrity-free npm entry stays manual.
 Unchanged npm workspace links (`"link": true`) are ignored; adding, removing,
-or changing a workspace-link entry stays manual.
+or changing a workspace-link entry stays manual. Non-`node_modules/` workspace
+target entries are also ignored only while unchanged; adding, removing, or
+changing one stays manual.
 
 Only Cargo packages from crates.io's canonical git index or sparse index are
 eligible. Changed or added git and alternate-registry packages stay manual, as

@@ -32,6 +32,8 @@ ID/private key or installation token.
    sources are ineligible.
 1. npm workspace-link entries are ignored only while unchanged. Adding,
    removing, or changing a `link: true` entry is ineligible.
+1. npm non-`node_modules/` workspace target entries are ignored only while
+   unchanged. Adding, removing, or changing one is ineligible.
 1. Changed and added Cargo entries must use a canonical crates.io source.
    Git/alternate-registry entries and any changed, added, or removed local
    workspace/path package are ineligible.

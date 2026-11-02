@@ -29,6 +29,7 @@ class LockedPackage:
     resolved: str | None = None
     integrity: str | None = None
     workspace_link: bool = False
+    workspace_package: bool = False
     entry_fingerprint: str | None = None
 
 
@@ -81,7 +82,7 @@ def _npm_name(path: str, package: dict[str, object]) -> str:
     if isinstance(explicit, str) and explicit:
         return explicit
     if "node_modules/" not in path:
-        raise LockfileError("package-lock entry has no package name")
+        return path
     return path.rsplit("node_modules/", 1)[-1]
 
 
@@ -101,6 +102,17 @@ def _read_npm(path: Path) -> dict[str, LockedPackage]:
                 raise LockfileError("package-lock.json contains an invalid package")
             name = _npm_name(package_path, package)
             fingerprint = json.dumps(package, sort_keys=True, separators=(",", ":"))
+            if "node_modules/" not in package_path:
+                version = package.get("version")
+                result[package_path] = LockedPackage(
+                    "npm",
+                    name,
+                    version if isinstance(version, str) else "",
+                    package_path,
+                    workspace_package=True,
+                    entry_fingerprint=fingerprint,
+                )
+                continue
             if package.get("link") is True:
                 result[package_path] = LockedPackage(
                     "npm",
@@ -191,16 +203,23 @@ def _npm_diff(base_path: Path, head_path: Path) -> LockDiff:
         old = base.get(key)
         new = head.get(key)
         if old is None:
-            if new.workspace_link:
+            if new.workspace_package:
+                ineligible_reasons.append("workspace package changed")
+            elif new.workspace_link:
                 ineligible_reasons.append(f"workspace link changed: {new.name}")
             else:
                 added.append(new)
                 ineligible_reasons.extend(_npm_source_reasons(new))
         elif new is None:
-            if old.workspace_link:
+            if old.workspace_package:
+                ineligible_reasons.append("workspace package changed")
+            elif old.workspace_link:
                 ineligible_reasons.append(f"workspace link changed: {old.name}")
             else:
                 removed.append(old)
+        elif old.workspace_package or new.workspace_package:
+            if old != new:
+                ineligible_reasons.append("workspace package changed")
         elif old.workspace_link or new.workspace_link:
             if old != new:
                 link = new if new.workspace_link else old
