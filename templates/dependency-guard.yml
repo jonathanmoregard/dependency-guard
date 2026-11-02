@@ -1,0 +1,43 @@
+name: dependency guard
+
+# Use pull_request, not pull_request_target: PR-head data must never run with a
+# privileged base-branch token. Dependabot pull_request runs can read Dependabot
+# secrets (not Actions secrets), so store guard-merger credentials there.
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions: {}
+
+jobs:
+  gate:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: jonathanmoregard/dependency-guard/.github/workflows/gate.yml@0000000000000000000000000000000000000000 # TODO-PIN jonathanmoregard/dependency-guard@v0.1
+    with:
+      patch-cooldown-days: 3
+      minor-cooldown-days: 7
+      security-cooldown-hours: 8
+      cargo-directory: .
+      npm-directory: .
+
+  automerge:
+    needs: gate
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: jonathanmoregard/dependency-guard/.github/workflows/automerge.yml@0000000000000000000000000000000000000000 # TODO-PIN jonathanmoregard/dependency-guard@v0.1
+    with:
+      mode: dry-run
+      ruleset-proof: ""
+      verdict: ${{ needs.gate.outputs.verdict }}
+      head-sha: ${{ needs.gate.outputs.head-sha }}
+      pr-number: ${{ github.event.pull_request.number }}
+    secrets:
+      guard-merger-app-id: ${{ secrets.GUARD_MERGER_APP_ID }}
+      guard-merger-private-key: ${{ secrets.GUARD_MERGER_PRIVATE_KEY }}
