@@ -228,6 +228,22 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result.verdict, "ineligible")
         self.assertIn("non-registry source: pkg", result.reasons)
 
+    def test_cargo_alternate_registry_is_ineligible(self):
+        alternate = "registry+https://registry.example.com/index"
+        base = cargo_lock([("direct", "1.0.0")]).replace(
+            "registry+https://github.com/rust-lang/crates.io-index", alternate
+        )
+        head = cargo_lock([("direct", "1.0.1")]).replace(
+            "registry+https://github.com/rust-lang/crates.io-index", alternate
+        )
+        (self.root / "base" / "Cargo.lock").write_text(base, encoding="utf-8")
+        (self.root / "head" / "Cargo.lock").write_text(head, encoding="utf-8")
+
+        result = self.evaluate()
+
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertIn("non-crates.io source: direct", result.reasons)
+
     def test_security_pr_uses_eight_hours_only_for_advised_package(self):
         self.write_cargo(
             [("direct", "1.0.0"), ("transitive", "1.0.0")],

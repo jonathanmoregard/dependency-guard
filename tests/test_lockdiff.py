@@ -9,6 +9,16 @@ from dependency_guard.lockdiff import diff_lockfiles
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def cargo_document(packages):
+    sections = ["version = 3"]
+    for name, version, source in packages:
+        lines = [f'name = "{name}"', f'version = "{version}"']
+        if source is not None:
+            lines.append(f'source = "{source}"')
+        sections.append("[[package]]\n" + "\n".join(lines))
+    return "\n\n".join(sections) + "\n"
+
+
 class LockDiffTests(unittest.TestCase):
     def test_cargo_handles_multiple_versions_of_one_crate(self):
         result = diff_lockfiles(
@@ -131,6 +141,80 @@ class LockDiffTests(unittest.TestCase):
                     f"missing integrity: {name}",
                     getattr(result, "ineligible_reasons", []),
                 )
+
+    def test_cargo_rejects_changed_or_added_non_crates_io_sources(self):
+        crates_io = "registry+https://github.com/rust-lang/crates.io-index"
+        unsafe_sources = (
+            "git+https://github.com/example/pkg?rev=abc#abc",
+            "registry+https://registry.example.com/index",
+        )
+        for mode in ("changed", "added"):
+            for source in unsafe_sources:
+                with self.subTest(mode=mode, source=source):
+                    base_packages = [("root", "1.0.0", crates_io)]
+                    if mode == "changed":
+                        base_packages.append(("unsafe", "1.0.0", source))
+                    head_packages = list(base_packages)
+                    if mode == "changed":
+                        head_packages[-1] = ("unsafe", "1.0.1", source)
+                    else:
+                        head_packages.append(("unsafe", "1.0.0", source))
+                    with tempfile.TemporaryDirectory() as tempdir:
+                        base = Path(tempdir) / "Cargo.base.lock"
+                        head = Path(tempdir) / "Cargo.head.lock"
+                        base.write_text(cargo_document(base_packages), encoding="utf-8")
+                        head.write_text(cargo_document(head_packages), encoding="utf-8")
+                        result = diff_lockfiles("cargo", base, head)
+
+                    self.assertIn(
+                        "non-crates.io source: unsafe", result.ineligible_reasons
+                    )
+
+    def test_cargo_rejects_any_changed_local_package(self):
+        cases = {
+            "changed": (
+                [("workspace", "1.0.0", None)],
+                [("workspace", "1.0.1", None)],
+            ),
+            "added": ([], [("workspace", "1.0.0", None)]),
+            "removed": ([("workspace", "1.0.0", None)], []),
+        }
+        for mode, (base_packages, head_packages) in cases.items():
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tempdir:
+                base = Path(tempdir) / "Cargo.base.lock"
+                head = Path(tempdir) / "Cargo.head.lock"
+                base.write_text(cargo_document(base_packages), encoding="utf-8")
+                head.write_text(cargo_document(head_packages), encoding="utf-8")
+                result = diff_lockfiles("cargo", base, head)
+
+                self.assertIn(
+                    "non-crates.io source: workspace", result.ineligible_reasons
+                )
+
+    def test_cargo_ignores_unchanged_local_packages_and_allows_crates_io(self):
+        allowed_sources = (
+            "registry+https://github.com/rust-lang/crates.io-index",
+            "sparse+https://index.crates.io/",
+        )
+        for source in allowed_sources:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as tempdir:
+                base = Path(tempdir) / "Cargo.base.lock"
+                head = Path(tempdir) / "Cargo.head.lock"
+                base.write_text(
+                    cargo_document(
+                        [("workspace", "1.0.0", None), ("crate", "1.0.0", source)]
+                    ),
+                    encoding="utf-8",
+                )
+                head.write_text(
+                    cargo_document(
+                        [("workspace", "1.0.0", None), ("crate", "1.0.1", source)]
+                    ),
+                    encoding="utf-8",
+                )
+                result = diff_lockfiles("cargo", base, head)
+
+                self.assertNotIn("non-crates.io source", " ".join(result.ineligible_reasons))
 
 
 if __name__ == "__main__":

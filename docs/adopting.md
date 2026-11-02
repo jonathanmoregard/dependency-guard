@@ -71,3 +71,7 @@ proof record ID. Live mode fails if the proof ID or either App secret is empty.
 Only npm packages resolved from `https://registry.npmjs.org/` with lockfile
 integrity data are eligible. A changed or added git, file, plain-HTTP,
 alternate-registry, unresolved, or integrity-free npm entry stays manual.
+
+Only Cargo packages from crates.io's canonical git index or sparse index are
+eligible. Changed or added git and alternate-registry packages stay manual, as
+does any added, removed, or changed workspace/path package without a `source`.

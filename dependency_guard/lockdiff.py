@@ -8,6 +8,13 @@ from pathlib import Path
 import tomllib
 
 
+CRATES_IO_SOURCES = {
+    "registry+https://github.com/rust-lang/crates.io-index",
+    "sparse+https://index.crates.io/",
+}
+LOCAL_CARGO_SOURCE = "path"
+
+
 class LockfileError(ValueError):
     """A lockfile could not be parsed or did not have the expected shape."""
 
@@ -55,7 +62,7 @@ def _read_cargo(path: Path) -> dict[tuple[str, str], list[LockedPackage]]:
                 raise LockfileError("Cargo.lock contains an invalid package")
             name = package.get("name")
             version = package.get("version")
-            source = package.get("source", "path")
+            source = package.get("source", LOCAL_CARGO_SOURCE)
             if not all(isinstance(value, str) for value in (name, version, source)):
                 raise LockfileError("Cargo.lock package identity is incomplete")
             locked = LockedPackage("cargo", name, version, source)
@@ -134,7 +141,18 @@ def _cargo_diff(base_path: Path, head_path: Path) -> LockDiff:
             )
         removed.extend(old_remaining[pair_count:])
         added.extend(new_remaining[pair_count:])
-    return LockDiff(changed, added, removed, [])
+    ineligible_reasons: list[str] = []
+    for package in [*changed, *added]:
+        if package.identity not in CRATES_IO_SOURCES:
+            reason = f"non-crates.io source: {package.name}"
+            if reason not in ineligible_reasons:
+                ineligible_reasons.append(reason)
+    for package in removed:
+        if package.identity == LOCAL_CARGO_SOURCE:
+            reason = f"non-crates.io source: {package.name}"
+            if reason not in ineligible_reasons:
+                ineligible_reasons.append(reason)
+    return LockDiff(changed, added, removed, ineligible_reasons)
 
 
 def _npm_source_reasons(package: LockedPackage) -> list[str]:
