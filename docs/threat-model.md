@@ -72,9 +72,8 @@ is safe.
 
 The gate does not inspect package source, run package code, review behavior, or
 prove that CI tests are sufficient. It also does not make deployment safe.
-Adopters own canaries, rollback, backups, and production release controls. For
-Klaffat those controls are deferred to the ECS migration in issue #20; live
-unattended production dependency merges remain blocked until that work is done.
+Adopters own canaries, rollback, backups, and production release controls. Do
+not run live mode against a production deploy path until those exist.
 
 App credential theft gives the attacker the App's installation permissions.
 Keep installation scope narrow, store credentials only as GitHub Dependabot
