@@ -13,7 +13,7 @@ permissions:
 
 Give it no other account or repository permission and no webhook. Install it
 only on repositories that will use dependency-guard. Generate a private key and
-record the App ID.
+record the **Client ID** (shown under About on the App page; it starts with `Iv`, and is not the numeric App ID).
 
 ## 2. Split the rulesets
 
@@ -37,7 +37,7 @@ live caller workflow.
 
 Copy the App values into the adopting repository as **Dependabot secrets**:
 
-1. `GUARD_MERGER_APP_ID`
+1. `GUARD_MERGER_CLIENT_ID`
 1. `GUARD_MERGER_PRIVATE_KEY`
 
 `pull_request` workflows started by Dependabot can read Dependabot secrets, not
