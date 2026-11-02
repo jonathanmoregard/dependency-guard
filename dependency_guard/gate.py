@@ -71,7 +71,7 @@ def _flatten_api_pages(value: object) -> list[object]:
     if not isinstance(value, list):
         raise ValueError("GitHub API data must be an array")
     if value and all(isinstance(item, list) for item in value):
-        return [entry for page in value for entry in page]  # type: ignore[misc]
+        return [entry for page in value for entry in page]
     return value
 
 

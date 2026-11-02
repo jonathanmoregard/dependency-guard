@@ -51,7 +51,7 @@ class HttpRegistry:
             url = f"https://registry.npmjs.org/{quote(name, safe='@')}"
             document = self._json(urllib.request.Request(url, headers=headers))
             try:
-                value = document["time"][version]  # type: ignore[index]
+                value = document["time"][version]
             except (KeyError, TypeError) as error:
                 raise RegistryError("npm publish time is missing") from error
             return self._datetime(value)
@@ -62,7 +62,7 @@ class HttpRegistry:
             )
             document = self._json(urllib.request.Request(url, headers=headers))
             try:
-                value = document["version"]["created_at"]  # type: ignore[index]
+                value = document["version"]["created_at"]
             except (KeyError, TypeError) as error:
                 raise RegistryError("crate publish time is missing") from error
             return self._datetime(value)
@@ -94,7 +94,7 @@ class HttpRegistry:
         )
         document = self._json(request)
         try:
-            result = document["results"][0]  # type: ignore[index]
+            result = document["results"][0]
             vulnerabilities = result.get("vulns", [])
             if not isinstance(vulnerabilities, list):
                 raise TypeError

@@ -140,7 +140,7 @@ def _npm_diff(base_path: Path, head_path: Path) -> LockDiff:
         old = base.get(key)
         new = head.get(key)
         if old is None:
-            added.append(new)  # type: ignore[arg-type]
+            added.append(new)
         elif new is None:
             removed.append(old)
         elif old.version != new.version:
