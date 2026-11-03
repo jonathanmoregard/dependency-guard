@@ -4,11 +4,16 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from dependency_guard.gate import evaluate_gate
+from dependency_guard.gate import _split_directories, evaluate_gate
 
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
 DEPENDABOT = "dependabot[bot]"
+NPM_METADATA = {
+    "package-ecosystem": "npm",
+    "dependency-names": "pkg",
+    "update-type": "version-update:semver-patch",
+}
 
 
 class FakeRegistry:
@@ -76,6 +81,27 @@ class GateTests(unittest.TestCase):
         (self.root / "head" / "Cargo.lock").write_text(
             cargo_lock(head), encoding="utf-8"
         )
+
+    def write_npm(self, directory, old, new):
+        for side, version in (("base", old), ("head", new)):
+            lockfile = {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"name": "root", "version": "1.0.0"},
+                    "node_modules/pkg": {
+                        "version": version,
+                        "resolved": (
+                            f"https://registry.npmjs.org/pkg/-/pkg-{version}.tgz"
+                        ),
+                        "integrity": f"sha512-{version}",
+                    },
+                },
+            }
+            target = self.root / side / directory
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "package-lock.json").write_text(
+                json.dumps(lockfile), encoding="utf-8"
+            )
 
     def evaluate(self, registry=None, **overrides):
         values = {
@@ -437,6 +463,100 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result.verdict, "ineligible")
         self.assertTrue(any("could not verify OSV" in reason for reason in result.reasons))
         self.assertTrue(any("72h cooldown" in reason for reason in result.reasons))
+
+    def test_second_configured_npm_directory_is_evaluated(self):
+        # Only the second directory has lockfiles, so reading the first fails.
+        self.write_npm("docs/site", "1.0.0", "1.0.1")
+
+        result = self.evaluate(
+            changed_files=["docs/site/package.json", "docs/site/package-lock.json"],
+            ecosystem_dirs={"cargo": ".", "npm": "tests/e2e\ndocs/site\n"},
+            metadata=NPM_METADATA,
+        )
+
+        self.assertEqual(result.verdict, "eligible", result.reasons)
+        self.assertEqual([package.name for package in result.packages], ["pkg"])
+
+    def test_unconfigured_dependency_directory_is_ineligible_not_red(self):
+        self.write_npm("tools/lint", "1.0.0", "1.0.1")
+
+        result = self.evaluate(
+            changed_files=["tools/lint/package.json", "tools/lint/package-lock.json"],
+            ecosystem_dirs={"cargo": ".", "npm": "tests/e2e, docs/site"},
+            metadata=NPM_METADATA,
+        )
+
+        self.assertNotEqual(result.verdict, "red")
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertIn("dependency directory is not configured: tools/lint", result.reasons)
+
+    def test_update_spanning_configured_directories_is_ineligible_not_red(self):
+        self.write_npm("tests/e2e", "1.0.0", "1.0.1")
+        self.write_npm("docs/site", "1.0.0", "1.0.1")
+
+        result = self.evaluate(
+            changed_files=[
+                "tests/e2e/package-lock.json",
+                "docs/site/package-lock.json",
+            ],
+            ecosystem_dirs={"cargo": ".", "npm": "tests/e2e\ndocs/site"},
+            metadata=NPM_METADATA,
+        )
+
+        self.assertNotEqual(result.verdict, "red")
+        self.assertEqual(result.verdict, "ineligible")
+        self.assertTrue(
+            any("spans several dependency directories" in r for r in result.reasons)
+        )
+
+    def test_non_manifest_file_is_red_with_several_directories(self):
+        self.write_npm("tests/e2e", "1.0.0", "1.0.1")
+        self.write_npm("tools/lint", "1.0.0", "1.0.1")
+        cases = {
+            "configured directory": "tests/e2e",
+            "unconfigured directory": "tools/lint",
+        }
+        for case, directory in cases.items():
+            with self.subTest(case=case):
+                result = self.evaluate(
+                    changed_files=[
+                        f"{directory}/package-lock.json",
+                        f"{directory}/index.js",
+                    ],
+                    ecosystem_dirs={"cargo": ".", "npm": "tests/e2e\ndocs/site"},
+                    metadata=NPM_METADATA,
+                )
+
+                self.assertEqual(result.verdict, "red")
+                self.assertIn(
+                    f"non-manifest/lockfile changes: {directory}/index.js",
+                    result.reasons,
+                )
+
+    def test_leading_slash_directory_matches_repository_relative_files(self):
+        self.write_npm("tests/e2e", "1.0.0", "1.0.1")
+
+        result = self.evaluate(
+            changed_files=["tests/e2e/package.json", "tests/e2e/package-lock.json"],
+            ecosystem_dirs={"cargo": ".", "npm": "/tests/e2e"},
+            metadata=NPM_METADATA,
+        )
+
+        self.assertEqual(result.verdict, "eligible", result.reasons)
+
+    def test_split_directories_reads_commas_newlines_blanks_and_duplicates(self):
+        cases = (
+            ("tests/e2e, /docs/site\n\n tests/e2e/ \n,", ["tests/e2e", "docs/site"]),
+            ("", ["."]),
+            (" \n , ", ["."]),
+            ("/", ["."]),
+            (["./tests/e2e", "tests/e2e", "."], ["tests/e2e", "."]),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(_split_directories(value), expected)
+        with self.assertRaises(ValueError):
+            _split_directories("tests/e2e\n../outside")
 
     def test_old_patch_is_eligible(self):
         self.write_cargo([("direct", "1.0.0")], [("direct", "1.0.1")])

@@ -34,8 +34,14 @@ jobs:
       patch-cooldown-days: 3
       minor-cooldown-days: 7
       security-cooldown-hours: 8
-      cargo-directory: .
-      npm-directory: .
+      # Directories holding this ecosystem's manifest and lockfile, newline- or
+      # comma-separated. A Dependabot update in a directory that is not listed
+      # here stays manual, and so does one that spans several of them:
+      #   npm-directories: |
+      #     tests/e2e
+      #     tests/agent-e2e
+      cargo-directories: .
+      npm-directories: .
 
   automerge:
     if: github.event_name == 'pull_request'

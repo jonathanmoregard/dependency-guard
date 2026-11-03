@@ -55,10 +55,26 @@ jonathanmoregard/dependency-guard/*
 ```
 
 Copy `templates/dependency-guard.yml` to
-`.github/workflows/dependency-guard.yml`, replace both `TODO-PIN` values with
+`.github/workflows/dependency-guard.yml`, replace every `TODO-PIN` value with
 the reviewed release commit SHA, and copy `templates/dependabot.yml` to
 `.github/dependabot.yml`. Adjust only the ecosystem directories and cooldown
-inputs needed by the repository. Keep the caller's `id-token: write` permission:
+inputs needed by the repository.
+
+`cargo-directories` and `npm-directories` each take one or more repository
+directories, newline- or comma-separated, and accept Dependabot's own
+`/tests/e2e` spelling as well as `tests/e2e`. List every directory that
+ecosystem's Dependabot entries cover:
+
+```yaml
+      npm-directories: |
+        tests/e2e
+        tests/agent-e2e
+```
+
+A Dependabot update whose manifest and lockfile sit in a directory that is not
+listed, or that spans several directories at once, is ineligible and stays
+manual: the gate does not fail for it. Only a changed file that is neither the
+manifest nor the lockfile of the ecosystem counts as tampering. Keep the caller's `id-token: write` permission:
 it is used solely to read the called workflow's OIDC `job_workflow_sha` claim
 before checking out executable code. Human and fork PRs short-circuit to
 `not-dependency` without requesting OIDC or checking out any repository. If a
