@@ -206,7 +206,7 @@ jobs:
           HEAD_ROOT: ${{ github.workspace }}/.dependency-guard/head
           METADATA_FILE: ${{ runner.temp }}/metadata.json
           MINOR_DAYS: ${{ inputs.minor-cooldown-days }}
-          NPM_DIR: ${{ inputs.npm-directory }}
+          NPM_DIRS: ${{ inputs.npm-directories }}
           PATCH_DAYS: ${{ inputs.patch-cooldown-days }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           SECURITY_HOURS: ${{ inputs.security-cooldown-hours }}

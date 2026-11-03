@@ -514,6 +514,33 @@ class WorkflowTests(unittest.TestCase):
                     "if: steps.identity.outputs.verified == 'true'", block
                 )
 
+    def test_gate_and_caller_use_declared_plural_directory_inputs(self):
+        gate = (ROOT / ".github" / "workflows" / "gate.yml").read_text(
+            encoding="utf-8"
+        )
+        inputs_section = gate[gate.index("    inputs:\n") : gate.index("    outputs:\n")]
+        declared = set(re.findall(r"^      ([a-z0-9-]+):$", inputs_section, re.M))
+        self.assertLessEqual(
+            {"cargo-directories", "npm-directories"}, declared
+        )
+        # Every input the gate reads must exist, so a stale name cannot
+        # silently evaluate as an empty string.
+        self.assertLessEqual(
+            set(re.findall(r"\binputs\.([a-z0-9-]+)", gate)), declared
+        )
+        evaluate = workflow_step_block("gate.yml", "Evaluate dependency gate")
+        self.assertIn("CARGO_DIRS: ${{ inputs.cargo-directories }}", evaluate)
+        self.assertIn("NPM_DIRS: ${{ inputs.npm-directories }}", evaluate)
+
+        caller = (ROOT / "templates" / "dependency-guard.yml").read_text(
+            encoding="utf-8"
+        )
+        gate_job = caller[caller.index("\n  gate:\n") : caller.index("\n  automerge:\n")]
+        with_section = gate_job[gate_job.index("    with:\n") :]
+        passed = set(re.findall(r"^      ([a-z0-9-]+):", with_section, re.M))
+        self.assertLessEqual({"cargo-directories", "npm-directories"}, passed)
+        self.assertLessEqual(passed, declared)
+
     def test_gate_reads_actor_from_workflow_context(self):
         evaluate = workflow_step_block("gate.yml", "Evaluate dependency gate")
 
