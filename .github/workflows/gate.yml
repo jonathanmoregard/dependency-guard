@@ -15,12 +15,16 @@ on:
         description: Cooldown for the advised package in a security PR
         type: number
         default: 8
-      cargo-directory:
-        description: Directory containing Cargo.toml and Cargo.lock
+      cargo-directories:
+        description: >-
+          Newline- or comma-separated directories holding Cargo.toml and
+          Cargo.lock. An update in any other directory stays manual.
         type: string
         default: .
-      npm-directory:
-        description: Directory containing package.json and package-lock.json
+      npm-directories:
+        description: >-
+          Newline- or comma-separated directories holding package.json and
+          package-lock.json. An update in any other directory stays manual.
         type: string
         default: .
     outputs:
@@ -196,7 +200,7 @@ jobs:
         env:
           ACTOR: ${{ github.actor }}
           BASE_ROOT: ${{ github.workspace }}/.dependency-guard/base
-          CARGO_DIR: ${{ inputs.cargo-directory }}
+          CARGO_DIRS: ${{ inputs.cargo-directories }}
           CHANGED_FILES_FILE: ${{ runner.temp }}/files.json
           COMMITS_FILE: ${{ runner.temp }}/commits.json
           HEAD_ROOT: ${{ github.workspace }}/.dependency-guard/head

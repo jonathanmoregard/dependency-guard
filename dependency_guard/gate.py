@@ -78,7 +78,10 @@ def _flatten_api_pages(value: object) -> list[object]:
 
 
 def _normalized_dir(value: str) -> PurePosixPath:
-    path = PurePosixPath(value or ".")
+    # Dependabot configuration spells repository-root paths as "/tests/e2e", so
+    # accept that spelling and read it as repository-relative.
+    text = (value or ".").strip().lstrip("/") or "."
+    path = PurePosixPath(text)
     if path.is_absolute() or ".." in path.parts:
         raise ValueError("ecosystem directories must be relative")
     return path
@@ -87,6 +90,67 @@ def _normalized_dir(value: str) -> PurePosixPath:
 def _repo_path(directory: str, filename: str) -> str:
     path = _normalized_dir(directory)
     return filename if str(path) == "." else str(path / filename)
+
+
+def _split_directories(value: object) -> list[str]:
+    """Read one ecosystem's directory input as an ordered, de-duplicated list."""
+    if isinstance(value, (list, tuple)):
+        entries = [str(item) for item in value]
+    else:
+        entries = str("." if value is None else value).replace(",", "\n").split("\n")
+    directories: list[str] = []
+    for entry in entries:
+        if not entry.strip():
+            continue
+        normalized = str(_normalized_dir(entry))
+        if normalized not in directories:
+            directories.append(normalized)
+    return directories or ["."]
+
+
+def _resolve_directory(
+    ecosystem: str, directories: list[str], changed_files: Iterable[str]
+) -> tuple[str | None, list[str], list[str]]:
+    """Pick the one configured directory this pull request updates.
+
+    Returns that directory, or None with the reason it cannot be evaluated.
+    Only a file that is not a manifest or lockfile of the ecosystem counts as
+    tampering: a Dependabot update in an unconfigured directory, or one
+    spanning several directories, is merely left to a human.
+    """
+    dependency_files = {MANIFESTS[ecosystem], LOCKFILES[ecosystem]}
+    red_reasons: list[str] = []
+    ineligible_reasons: list[str] = []
+    touched: list[str] = []
+    unexpected: list[str] = []
+    for changed in changed_files:
+        path = PurePosixPath(changed)
+        if path.name not in dependency_files or ".." in path.parts:
+            unexpected.append(changed)
+            continue
+        directory = str(path.parent)
+        if directory not in touched:
+            touched.append(directory)
+    if unexpected:
+        red_reasons.append(
+            "non-manifest/lockfile changes: " + ", ".join(sorted(unexpected))
+        )
+    if len(touched) > 1:
+        ineligible_reasons.append(
+            "update spans several dependency directories: " + ", ".join(sorted(touched))
+        )
+        return None, red_reasons, ineligible_reasons
+    if not touched:
+        # Nothing this ecosystem owns changed; evaluating the first configured
+        # directory reports no changed resolved packages, which is ineligible.
+        return directories[0], red_reasons, ineligible_reasons
+    directory = touched[0]
+    if directory not in directories:
+        ineligible_reasons.append(
+            f"dependency directory is not configured: {directory}"
+        )
+        return None, red_reasons, ineligible_reasons
+    return directory, red_reasons, ineligible_reasons
 
 
 def _metadata_names(metadata: dict[str, object]) -> set[str]:
@@ -154,7 +218,7 @@ def evaluate_gate(
     changed_files: list[str],
     base_root: str | Path,
     head_root: str | Path,
-    ecosystem_dirs: dict[str, str],
+    ecosystem_dirs: dict[str, str | list[str]],
     metadata: dict[str, object],
     registry: Registry,
     now: datetime,
@@ -185,16 +249,15 @@ def evaluate_gate(
         verdict = "red" if red_reasons else "ineligible"
         return GateResult(verdict, red_reasons + ineligible_reasons, [])
 
-    directory = ecosystem_dirs.get(ecosystem, ".")
-    allowed = {
-        _repo_path(directory, MANIFESTS[ecosystem]),
-        _repo_path(directory, LOCKFILES[ecosystem]),
-    }
-    unexpected = sorted(set(changed_files) - allowed)
-    if unexpected:
-        red_reasons.append(
-            "non-manifest/lockfile changes: " + ", ".join(unexpected)
-        )
+    directories = _split_directories(ecosystem_dirs.get(ecosystem, "."))
+    directory, directory_red, directory_ineligible = _resolve_directory(
+        ecosystem, directories, changed_files
+    )
+    red_reasons.extend(directory_red)
+    ineligible_reasons.extend(directory_ineligible)
+    if directory is None:
+        verdict = "red" if red_reasons else "ineligible"
+        return GateResult(verdict, red_reasons + ineligible_reasons, [])
 
     base_path = Path(base_root) / _repo_path(directory, LOCKFILES[ecosystem])
     head_path = Path(head_root) / _repo_path(directory, LOCKFILES[ecosystem])
@@ -339,8 +402,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--metadata-file", default=os.environ.get("METADATA_FILE"))
     parser.add_argument("--base-root", default=os.environ.get("BASE_ROOT"))
     parser.add_argument("--head-root", default=os.environ.get("HEAD_ROOT"))
-    parser.add_argument("--cargo-dir", default=os.environ.get("CARGO_DIR", "."))
-    parser.add_argument("--npm-dir", default=os.environ.get("NPM_DIR", "."))
+    parser.add_argument("--cargo-dirs", default=os.environ.get("CARGO_DIRS", "."))
+    parser.add_argument("--npm-dirs", default=os.environ.get("NPM_DIRS", "."))
     parser.add_argument(
         "--patch-days", type=int, default=int(os.environ.get("PATCH_DAYS", "3"))
     )
@@ -400,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         changed_files=changed_files,
         base_root=args.base_root,
         head_root=args.head_root,
-        ecosystem_dirs={"cargo": args.cargo_dir, "npm": args.npm_dir},
+        ecosystem_dirs={"cargo": args.cargo_dirs, "npm": args.npm_dirs},
         metadata=metadata,
         registry=HttpRegistry(),
         now=now,
